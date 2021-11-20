@@ -1,4 +1,8 @@
-﻿using System;
+﻿// Original Author: 0xbadjuju (https://github.com/0xbadjuju/Sharpire)
+// Updated and Modified by: Jake Krasnov (@_Hubbl3)
+// Project: Empire (https://github.com/BC-SECURITY/Empire)
+
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Management.Automation;

