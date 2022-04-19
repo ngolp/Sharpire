@@ -203,7 +203,7 @@ namespace Sharpire
                         }
                         else
                         {
-                            return output;
+                            return new byte[0];
                         }
                     }
                 }
