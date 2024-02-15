@@ -374,7 +374,7 @@ namespace Sharpire
                 if (string.IsNullOrEmpty(packet.data) || packet.data.Trim().Length == 0)
                     return EncodePacket(0, "Invalid input data", packet.taskId);
 
-                int chunkSize = 512 * 1024; // Default chunk size
+                int chunkSize = 512 * 1024;
                 string[] packetParts = packet.data.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 string path = ParsePath(packetParts, out bool isChunkSizeAdjusted);
 
