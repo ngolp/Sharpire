@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Security.Cryptography;
 
 namespace Sharpire
 {
