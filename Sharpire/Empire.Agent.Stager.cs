@@ -4,6 +4,7 @@ using System.Management;
 using System.Management.Automation.Runspaces;
 using System.Net;
 using System.Diagnostics;
+using System.Security.Cryptography.ChaCha20Poly1305;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
@@ -282,7 +283,11 @@ namespace Sharpire
 
         private RoutingPacket DecodeRoutingPacket(byte[] packetData)
         {
-            if (packetData.Length < 20)
+
+            int nonce_length = 12;
+            int chacha_header_length = nonce_length + 32;
+
+            if (packetData.Length < chacha_header_length)
             {
                 return null;
             }
@@ -291,21 +296,29 @@ namespace Sharpire
 
             while (offset < packetData.Length)
             {
-                byte[] routingPacket = packetData.Skip(offset).Take(20).ToArray();
-                byte[] routingInitializationVector = routingPacket.Take(4).ToArray();
-                byte[] routingEncryptedData = routingPacket.Skip(4).Take(16).ToArray();
-                offset += 20;
+                // parse given packet
+                byte[] routingPacket = packetData.Skip(offset).Take(chacha_header_length).ToArray();
+                byte[] chachaNonce = routingPacket.Take(nonce_length).ToArray();
+                byte[] routingChachaData = routingPacket.Skip(nonce_length).Take(32).ToArray(); // chacha20 encrypted data and poly1305 tag
+                offset += chacha_header_length;
 
-                byte[] stagingKey = sessionInfo.GetStagingKeyBytes();
-                byte[] rc4Key = Misc.combine(routingInitializationVector, stagingKey);
-                
-                byte[] routingData = rc4Encrypt(rc4Key, routingEncryptedData);
+                // Prep data for decryption
+                byte[] key = sessionInfo.GetStagingKeyBytes();
+                byte[] chachaData = routingChachaData.Take(16).ToArray();
+                byte[] poly1305Tag = routingChachaData.Skip(16).Take(16).ToArray();
 
+                byte[] routingData = new byte[16];
+                // Strip tag + decrypt
+                using (var chacha = new ChaCha20Poly1305(key))
+                {
+                    chacha.Decrypt(chachaNonce, chachaData, poly1305, routingData, associatedData: null);
+                }
+
+                // parse routing data
                 if (routingData.Length < 16)
                 {
                     return null;
                 }
-
                 string packetSessionId = Encoding.UTF8.GetString(routingData.Take(8).ToArray());
 
                 byte language = routingData[8];
@@ -322,7 +335,7 @@ namespace Sharpire
 
                 return new RoutingPacket
                 {
-                    InitializationVector = routingInitializationVector,
+                    InitializationVector = chachaNonce,
                     EncryptedData = encryptedData,
                     DecryptedData = null,
                     SessionId = packetSessionId,
