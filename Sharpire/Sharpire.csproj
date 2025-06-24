@@ -65,6 +65,11 @@
     <Reference Include="System.Data" />
     <Reference Include="System.Xml" />
   </ItemGroup>
+q  <ItemGroup>
+  <Reference Include="System.Management.Automation">
+    <HintPath>/home/futureleader/.local/share/empire/empire-compiler/EmpireCompiler-linux-x64-v0.3.3/EmpireCompiler/Data/AssemblyReferences/net40/System.Management.Automation.dll</HintPath>
+  </Reference>
+</ItemGroup>
   <ItemGroup>
     <Compile Include="..\Properties\AssemblyInfo.cs">
       <Link>Properties\AssemblyInfo.cs</Link>
@@ -73,6 +78,7 @@
     <Compile Include="Empire.Agent.cs" />
     <Compile Include="Empire.Agent.Jobs.cs" />
     <Compile Include="Empire.Agent.Stager.cs" />
+    <Compile Include="Empire.Agent.ChaCha20Poly1305.cs" />
     <Compile Include="Misc.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

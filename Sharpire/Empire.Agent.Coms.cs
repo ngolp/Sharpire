@@ -9,6 +9,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Security.Cryptography;
+using ChaChaEncryption;
 
 namespace Sharpire
 {
@@ -110,10 +111,7 @@ HMACc = first 10 bytes of a SHA256 HMAC using the client's session key
             byte[] chacha_data = new byte[16];
             byte[] poly1305_tag = new byte[16];
             byte[] chacha_nonce = NewInitializationVector(nonce_length);
-            using (var chacha = new ChaCha20Poly1305(sessionInfo.GetStagingKeyBytes()))
-            {
-                chacha.Encrypt(chacha_nonce, data, chacha_data, poly1305_tag, associatedData: null);
-            }
+            ChaCha20Poly1305.Encrypt(sessionInfo.GetStagingKeyBytes(), chacha_nonce, data, out chacha_data, out poly1305_tag);
 
             byte[] routingPacketData = Misc.combine(chacha_nonce, chacha_data);
             routingPacketData = Misc.combine(routingPacketData, poly1305_tag);
@@ -148,10 +146,9 @@ HMACc = first 10 bytes of a SHA256 HMAC using the client's session key
 
                 byte[] routingData = new byte[16];
                 // Strip tag + decrypt
-                using (var chacha = new ChaCha20Poly1305(sessionInfo.GetStagingKeyBytes()))
-                {
-                    chacha.Decrypt(chachaNonce, chachaData, poly1305, routingData, associatedData: null);
-                }
+
+                ChaCha20Poly1305.Decrypt(sessionInfo.GetStagingKeyBytes(), chachaNonce, chachaData, poly1305Tag, out routingData);
+
                 string packetSessionId = Encoding.UTF8.GetString(routingData.Take(8).ToArray());
                 try
                 {

