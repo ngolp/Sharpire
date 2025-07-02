@@ -4,6 +4,8 @@ using System.Linq;
 
 namespace ChaChaEncryption
 {
+
+    //class that handles ChaCha20 functionality
     public class ChaCha20
     {
         private const int ROUNDS = 20;
@@ -18,6 +20,7 @@ namespace ChaChaEncryption
             c += d; b ^= c; b = Rotate(b, 7);
         }
 
+        //Chacha20 encrypt/decrypt
         public static void Encrypt(byte[] key, byte[] nonce, uint counter, byte[] input, byte[] output)
         {
             uint[] state = new uint[16];
@@ -60,10 +63,12 @@ namespace ChaChaEncryption
         }
     }
 
+    //Handles Poly1305 functionality
     public class Poly1305
     {
         private const int BLOCK_SIZE = 16;
 
+        //Compute a poly1305 tag
         public static byte[] ComputeTag(byte[] ciphertext, byte[] aad, byte[] key32)
         {
             if (key32.Length != 32)
@@ -139,8 +144,11 @@ namespace ChaChaEncryption
         }
     }
 
+    //handles chacha20poly1305 functionality TOGETHER
     public static class ChaCha20Poly1305
     {
+
+        //Encrypts (gets chacha20 encryption and poly1305 tag)
         public static void Encrypt(byte[] key, byte[] nonce, byte[] plaintext, out byte[] ciphertext, out byte[] tag)
         {
             byte[] keystream = new byte[64];
@@ -155,6 +163,7 @@ namespace ChaChaEncryption
             ciphertext = ciphertextOut;
         }
 
+        //Decrypts (decrypts chacha20 data and verifies poly1305 tag)
         public static bool Decrypt(byte[] key, byte[] nonce, byte[] ciphertext, byte[] tag, out byte[] plaintext)
         {
             byte[] keystream = new byte[64];
